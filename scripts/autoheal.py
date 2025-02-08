@@ -17,9 +17,7 @@ response = openai.ChatCompletion.create(
     model="gpt-4",  # Corrected API usage
     messages=[
         {"role": "system", "content": "You are an AI that analyzes CI/CD deployment errors and suggests code fixes."},
-        {"role": "user", "content": f"Analyze this deployment error and suggest a fix:
-
-{error_log}"}
+        {"role": "user", "content": f"Analyze this deployment error and suggest a fix:\n\n{error_log}"}
     ],
     temperature=0
 )
