@@ -6,29 +6,14 @@ provider "azurerm" {
   tenant_id       = var.tenant_id
 }
 
-resource "azurerm_cognitive_account" "openai_account" {
-  name                = "openaiaccount${random_id.unique.hex}"
-  location            = "East US"
-  resource_group_name = "openai_rg"
-  kind                = "OpenAI"
-  sku_name            = "INVALID_SKU"  # Intentional error to trigger auto-heal
-
-  custom_subdomain_name = "openaiaccount${random_id.unique.hex}"
-
-  network_acls {
-    default_action = "Allow"
-  }
+resource "azurerm_storage_account" "broken_storage" {
+  name                     = "Invalid_Storage_Name"  # Error: Azure storage account names must be lowercase and alphanumeric
+  resource_group_name      = "openai_rg"
+  location                 = "East US"
+  account_tier             = "InvalidTier"  # Error: Invalid SKU name
+  account_replication_type = "LRS"
 }
 
-resource "random_id" "unique" {
-  byte_length = 4
-}
-
-output "openai_endpoint" {
-  value = azurerm_cognitive_account.openai_account.endpoint
-}
-
-output "openai_key" {
-  value     = azurerm_cognitive_account.openai_account.primary_access_key
-  sensitive = true
+output "storage_endpoint" {
+  value = azurerm_storage_account.broken_storage.primary_blob_endpoint
 }
