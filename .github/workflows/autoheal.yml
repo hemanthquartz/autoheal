@@ -54,15 +54,22 @@ jobs:
             -var "subscription_id=${{ secrets.AZURE_SUBSCRIPTION_ID }}" \
             -var "client_id=${{ secrets.AZURE_CLIENT_ID }}" \
             -var "tenant_id=${{ secrets.AZURE_TENANT_ID }}" 2>&1 | tee tf_error_log.txt
-          echo "TF_EXIT_CODE=$?" >> $GITHUB_ENV
-          if [ "$TF_EXIT_CODE" -ne 0 ]; then
-            echo "Terraform failed, setting failure flag"
+          TF_EXIT_CODE=${PIPESTATUS[0]}
+          echo "Terraform exited with code $TF_EXIT_CODE"
+          echo "TF_EXIT_CODE=$TF_EXIT_CODE" >> $GITHUB_ENV
+          if [[ "$TF_EXIT_CODE" -ne 0 ]]; then
             echo "DEPLOYMENT_FAILED=true" >> $GITHUB_ENV
           fi
         continue-on-error: true
         working-directory: terraform
 
       - name: Auto-Heal Deployment (if Terraform failed)
-        if: env.DEPLOYMENT_FAILED == 'true'
+        if: always()
         run: |
-          python3 scripts/autoheal.py
+          if [[ "$DEPLOYMENT_FAILED" == "true" ]]; then
+            echo "Deployment failed. Running autoheal script..."
+            python3 scripts/autoheal.py
+          else
+            echo "Deployment succeeded. Skipping autoheal."
+          fi
+
