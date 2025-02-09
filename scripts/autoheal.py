@@ -10,7 +10,7 @@ openai.api_key = OPENAI_API_KEY
 openai.api_base = OPENAI_ENDPOINT
 
 # Define correct log file path
-error_log_path = "tf_error_log.txt"  # Updated filename
+error_log_path = "terraform/tf_error_log.txt"  # Ensure correct path
 
 # Check if the error log file exists
 if not os.path.exists(error_log_path):
