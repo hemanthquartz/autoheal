@@ -4,12 +4,12 @@ import requests
 
 # Get OpenAI credentials from environment variables
 OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
-OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+OPENAI_RESOURCE_NAME = os.getenv("AZURE_OPENAI_RESOURCE_NAME")  # Ensure this is set in secrets
 OPENAI_DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o")
 OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2023-12-01-preview")
 
 # Construct the correct API endpoint
-API_URL = f"{OPENAI_ENDPOINT}openai/deployments/{OPENAI_DEPLOYMENT_NAME}/chat/completions?api-version={OPENAI_API_VERSION}"
+API_URL = f"https://{OPENAI_RESOURCE_NAME}.openai.azure.com/openai/deployments/{OPENAI_DEPLOYMENT_NAME}/chat/completions?api-version={OPENAI_API_VERSION}"
 
 print(f"Using OpenAI API Endpoint: {API_URL}")
 
@@ -34,7 +34,7 @@ print("Testing network connectivity to OpenAI API...")
 
 try:
     # Verify network connectivity
-    response = requests.get(API_URL, headers={"Authorization": f"Bearer {OPENAI_API_KEY}"}, timeout=10)
+    response = requests.get(API_URL, headers={"api-key": OPENAI_API_KEY}, timeout=10)
     print(f"API Connectivity Test Response Code: {response.status_code}")
 except requests.RequestException as e:
     print(f"Network error while connecting to OpenAI: {e}")
@@ -43,8 +43,12 @@ except requests.RequestException as e:
 print("Sending error logs to OpenAI for analysis...")
 
 try:
-    # Send error log to OpenAI for analysis
-    client = openai.OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_ENDPOINT)
+    # Send error log to OpenAI for analysis using OpenAI v1.0+ API format
+    client = openai.AzureOpenAI(
+        api_key=OPENAI_API_KEY,
+        azure_endpoint=f"https://{OPENAI_RESOURCE_NAME}.openai.azure.com/",
+        api_version=OPENAI_API_VERSION
+    )
 
     response = client.chat.completions.create(
         model=OPENAI_DEPLOYMENT_NAME,
