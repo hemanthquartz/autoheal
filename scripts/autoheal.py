@@ -10,11 +10,11 @@ openai.api_key = OPENAI_API_KEY
 openai.api_base = OPENAI_ENDPOINT
 
 # Define correct log file path
-error_log_path = "terraform/tf_error_log.txt"  # Ensure correct path
+error_log_path = "tf_error_log.txt"  # Removed "terraform/" prefix
 
 # Check if the error log file exists
 if not os.path.exists(error_log_path):
-    print(f"Error log {error_log_path} not found. Exiting auto-heal process.")
+    print(f"Error log {error_log_path} not found in {os.getcwd()}. Exiting auto-heal process.")
     exit(1)
 
 # Read the error log
