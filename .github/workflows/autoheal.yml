@@ -70,8 +70,9 @@ jobs:
             echo "Deployment failed. Running autoheal script..."
             echo "Checking directory contents before running autoheal:"
             ls -l $GITHUB_WORKSPACE/terraform
-            ls -l $GITHUB_WORKSPACE
+            cd $GITHUB_WORKSPACE  # Ensure correct working directory
             python3 scripts/autoheal.py
           else
             echo "Deployment succeeded. Skipping autoheal."
           fi
+
