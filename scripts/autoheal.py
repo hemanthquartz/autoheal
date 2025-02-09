@@ -5,7 +5,7 @@ import lunary
 API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION")
 API_KEY = os.environ.get("AZURE_OPENAI_API_KEY")
 AZURE_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
-RESOURCE_NAME = os.environ.get("AZURE_OPENAI_RESOURCE_NAME")
+RESOURCE_NAME = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME")
 
 
 client = AzureOpenAI(
