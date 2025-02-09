@@ -70,9 +70,11 @@ jobs:
             echo "Deployment failed. Running autoheal script..."
             echo "Checking directory contents before running autoheal:"
             ls -l $GITHUB_WORKSPACE/terraform
-            cd $GITHUB_WORKSPACE  # Ensure correct working directory
+            echo "Checking GitHub Secrets for OpenAI Resource Name:"
+            echo "AZURE_OPENAI_RESOURCE_NAME=${{ secrets.AZURE_OPENAI_RESOURCE_NAME }}"
             python3 scripts/autoheal.py
           else
             echo "Deployment succeeded. Skipping autoheal."
           fi
+
 
