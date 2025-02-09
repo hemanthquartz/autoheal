@@ -1,14 +1,24 @@
 import os
 import openai
+import requests
 
 # Get OpenAI credentials from environment variables
 OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+OPENAI_DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o")
+OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2023-12-01-preview")
 
-# Configure OpenAI API
-client = openai.OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_ENDPOINT)
+# Construct the correct API endpoint
+API_URL = f"{OPENAI_ENDPOINT}openai/deployments/{OPENAI_DEPLOYMENT_NAME}/chat/completions?api-version={OPENAI_API_VERSION}"
 
-# Define correct log file path (inside terraform directory)
+print(f"Using OpenAI API Endpoint: {API_URL}")
+
+# Check API key
+if not OPENAI_API_KEY:
+    print("Error: OpenAI API key is missing. Exiting auto-heal process.")
+    exit(1)
+
+# Define correct log file path
 error_log_path = os.path.join(os.getcwd(), "terraform/tf_error_log.txt")
 
 # Check if the error log file exists
@@ -20,12 +30,24 @@ if not os.path.exists(error_log_path):
 with open(error_log_path, "r") as f:
     error_log = f.read()
 
+print("Testing network connectivity to OpenAI API...")
+
+try:
+    # Verify network connectivity
+    response = requests.get(API_URL, headers={"Authorization": f"Bearer {OPENAI_API_KEY}"}, timeout=10)
+    print(f"API Connectivity Test Response Code: {response.status_code}")
+except requests.RequestException as e:
+    print(f"Network error while connecting to OpenAI: {e}")
+    exit(1)
+
 print("Sending error logs to OpenAI for analysis...")
 
 try:
-    # Send error log to OpenAI for analysis using OpenAI v1.0+ API format
+    # Send error log to OpenAI for analysis
+    client = openai.OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_ENDPOINT)
+
     response = client.chat.completions.create(
-        model="gpt-4",
+        model=OPENAI_DEPLOYMENT_NAME,
         messages=[
             {"role": "system", "content": "You are an AI that analyzes CI/CD deployment errors and suggests code fixes."},
             {"role": "user", "content": f"Analyze this Terraform deployment error and suggest a fix:\n\n{error_log}"}
