@@ -65,6 +65,11 @@ jobs:
 
       - name: Auto-Heal Deployment (if Terraform failed)
         if: always()
+        env:
+          AZURE_OPENAI_RESOURCE_NAME: ${{ secrets.AZURE_OPENAI_RESOURCE_NAME }}
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.AZURE_OPENAI_DEPLOYMENT_NAME }}
+          AZURE_OPENAI_API_VERSION: ${{ secrets.AZURE_OPENAI_API_VERSION }}
         run: |
           if [[ "$DEPLOYMENT_FAILED" == "true" ]]; then
             echo "Deployment failed. Running autoheal script..."
