@@ -72,4 +72,6 @@ jobs:
           else
             echo "Deployment succeeded. Skipping autoheal."
           fi
+        working-directory: terraform
+
 
