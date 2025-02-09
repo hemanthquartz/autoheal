@@ -49,11 +49,17 @@ jobs:
       - name: Terraform Apply
         id: deploy
         run: |
+          set +e
           terraform apply -auto-approve -input=false 2>&1 | tee tf_error_log.txt
+          echo "TF_EXIT_CODE=$?" >> $GITHUB_ENV
+          if [ "$TF_EXIT_CODE" -ne 0 ]; then
+            echo "Terraform failed, setting failure flag"
+            echo "DEPLOYMENT_FAILED=true" >> $GITHUB_ENV
+          fi
         continue-on-error: true
         working-directory: terraform
 
-      - name: Auto-Heal Deployment (if failed)
-        if: failure()
+      - name: Auto-Heal Deployment (if Terraform failed)
+        if: env.DEPLOYMENT_FAILED == 'true'
         run: |
           python3 scripts/autoheal.py
