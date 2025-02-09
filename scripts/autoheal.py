@@ -1,6 +1,5 @@
 import os
 from openai import AzureOpenAI
-import lunary 
 
 API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION")
 API_KEY = os.environ.get("AZURE_OPENAI_API_KEY")
@@ -13,7 +12,6 @@ client = AzureOpenAI(
     azure_endpoint=AZURE_ENDPOINT,
     api_key=API_KEY
 )
-lunary.monitor(client)
 
 completion = client.chat.completions.create(
     model=RESOURCE_NAME,
