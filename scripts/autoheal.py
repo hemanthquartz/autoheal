@@ -7,14 +7,19 @@ OPENAI_RESOURCE_NAME = os.getenv("AZURE_OPENAI_RESOURCE_NAME")  # e.g., "openaia
 OPENAI_DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o")
 OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2023-12-01-preview")
 
+# Validate that resource name is set
+if not OPENAI_RESOURCE_NAME or OPENAI_RESOURCE_NAME == "None":
+    print("❌ ERROR: OpenAI resource name is missing. Please set AZURE_OPENAI_RESOURCE_NAME in GitHub Secrets.")
+    exit(1)
+
 # Construct the correct API endpoint (must match working cURL)
 API_URL = f"https://{OPENAI_RESOURCE_NAME}.openai.azure.com/openai/deployments/{OPENAI_DEPLOYMENT_NAME}/chat/completions?api-version={OPENAI_API_VERSION}"
 
-print(f"Using OpenAI API Endpoint: {API_URL}")
+print(f"✅ Using OpenAI API Endpoint: {API_URL}")
 
 # Check API key
 if not OPENAI_API_KEY:
-    print("Error: OpenAI API key is missing. Exiting auto-heal process.")
+    print("❌ ERROR: OpenAI API key is missing. Please set AZURE_OPENAI_API_KEY in GitHub Secrets.")
     exit(1)
 
 # Define correct log file path
@@ -22,14 +27,14 @@ error_log_path = os.path.join(os.getcwd(), "terraform/tf_error_log.txt")
 
 # Check if the error log file exists
 if not os.path.exists(error_log_path):
-    print(f"Error log {error_log_path} not found in {os.getcwd()}. Exiting auto-heal process.")
+    print(f"❌ ERROR: Error log {error_log_path} not found in {os.getcwd()}. Exiting auto-heal process.")
     exit(1)
 
 # Read the error log
 with open(error_log_path, "r") as f:
     error_log = f.read()
 
-print("Testing network connectivity to OpenAI API...")
+print("🌐 Testing network connectivity to OpenAI API...")
 
 try:
     # Verify network connectivity
@@ -39,10 +44,10 @@ try:
         print(f"❌ ERROR: API returned 404. The OpenAI deployment '{OPENAI_DEPLOYMENT_NAME}' might not exist.")
         exit(1)
 except requests.RequestException as e:
-    print(f"Network error while connecting to OpenAI: {e}")
+    print(f"❌ Network error while connecting to OpenAI: {e}")
     exit(1)
 
-print("Sending error logs to OpenAI for analysis...")
+print("📡 Sending error logs to OpenAI for analysis...")
 
 # Define the request payload
 payload = {
@@ -72,5 +77,5 @@ try:
 
     print("✅ AI analysis complete. Fix suggestion saved.")
 except Exception as e:
-    print(f"Error occurred while calling OpenAI API: {e}")
+    print(f"❌ Error occurred while calling OpenAI API: {e}")
     exit(1)
