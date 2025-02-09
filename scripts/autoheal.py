@@ -6,8 +6,7 @@ OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 
 # Configure OpenAI API
-openai.api_key = OPENAI_API_KEY
-openai.api_base = OPENAI_ENDPOINT
+client = openai.OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_ENDPOINT)
 
 # Define correct log file path (inside terraform directory)
 error_log_path = os.path.join(os.getcwd(), "terraform/tf_error_log.txt")
@@ -24,8 +23,8 @@ with open(error_log_path, "r") as f:
 print("Sending error logs to OpenAI for analysis...")
 
 try:
-    # Send error log to OpenAI for analysis using the new API format
-    response = openai.ChatCompletion.create(
+    # Send error log to OpenAI for analysis using OpenAI v1.0+ API format
+    response = client.chat.completions.create(
         model="gpt-4",
         messages=[
             {"role": "system", "content": "You are an AI that analyzes CI/CD deployment errors and suggests code fixes."},
@@ -35,7 +34,7 @@ try:
     )
 
     # Extract AI-suggested fix
-    fix_suggestion = response["choices"][0]["message"]["content"]
+    fix_suggestion = response.choices[0].message.content
 
     # Save fix suggestion for later processing
     with open("ai_fix_suggestion.txt", "w") as f:
