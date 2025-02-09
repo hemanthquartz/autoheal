@@ -49,11 +49,11 @@ jobs:
       - name: Terraform Apply
         id: deploy
         run: |
-          terraform apply -auto-approve -input=false
+          terraform apply -auto-approve -input=false 2>&1 | tee tf_error_log.txt
         continue-on-error: true
         working-directory: terraform
 
       - name: Auto-Heal Deployment (if failed)
         if: failure()
         run: |
-          python3 scripts/autoheal.py "${{ steps.deploy.outcome }}"
+          python3 scripts/autoheal.py
