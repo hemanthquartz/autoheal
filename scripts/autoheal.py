@@ -4,18 +4,19 @@ import requests
 # Get OpenAI credentials from environment variables
 OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 OPENAI_RESOURCE_NAME = os.getenv("AZURE_OPENAI_RESOURCE_NAME")  # e.g., "openaiaccount9962b28a"
-OPENAI_DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o")
+OPENAI_DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o")  # Deployment name must match exactly
 OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2023-12-01-preview")
 
-# Validate that resource name is set
-if not OPENAI_RESOURCE_NAME or OPENAI_RESOURCE_NAME == "None":
-    print("❌ ERROR: OpenAI resource name is missing. Please set AZURE_OPENAI_RESOURCE_NAME in GitHub Secrets.")
+# Validate that the deployment name is set correctly
+if not OPENAI_DEPLOYMENT_NAME or OPENAI_DEPLOYMENT_NAME == "None":
+    print("❌ ERROR: OpenAI deployment name is missing. Please set AZURE_OPENAI_DEPLOYMENT_NAME in GitHub Secrets.")
     exit(1)
 
 # Construct the correct API endpoint (must match working cURL)
 API_URL = f"https://{OPENAI_RESOURCE_NAME}.openai.azure.com/openai/deployments/{OPENAI_DEPLOYMENT_NAME}/chat/completions?api-version={OPENAI_API_VERSION}"
 
 print(f"✅ Using OpenAI API Endpoint: {API_URL}")
+print(f"🔍 DEBUG: OpenAI Deployment Name: {OPENAI_DEPLOYMENT_NAME}")
 
 # Check API key
 if not OPENAI_API_KEY:
@@ -42,6 +43,8 @@ try:
     print(f"API Connectivity Test Response Code: {response.status_code}")
     if response.status_code == 404:
         print(f"❌ ERROR: API returned 404. The OpenAI deployment '{OPENAI_DEPLOYMENT_NAME}' might not exist.")
+        print("🔍 DEBUG: Check OpenAI deployments in Azure and ensure the deployment name is correct.")
+        print("🔍 DEBUG: Deployment names are CASE-SENSITIVE.")
         exit(1)
 except requests.RequestException as e:
     print(f"❌ Network error while connecting to OpenAI: {e}")
