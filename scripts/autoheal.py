@@ -9,8 +9,8 @@ OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 openai.api_key = OPENAI_API_KEY
 openai.api_base = OPENAI_ENDPOINT
 
-# Define correct log file path
-error_log_path = "tf_error_log.txt"  # Removed "terraform/" prefix
+# Define correct log file path (inside terraform directory)
+error_log_path = os.path.join(os.getcwd(), "terraform/tf_error_log.txt")
 
 # Check if the error log file exists
 if not os.path.exists(error_log_path):
