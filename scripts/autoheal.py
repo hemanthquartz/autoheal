@@ -43,7 +43,7 @@ def get_openai_fix(error_message):
             {"role": "user", "content": f"Fix this Terraform error: {error_message}"}
         ]
     )
-    return response.choices[0].message["content"].strip()
+    return response.choices[0].message.content.strip()
 
 def update_main_tf(fixed_code):
     """Update the main.tf file with the AI-generated fix."""
