@@ -63,7 +63,6 @@ def create_github_pr():
     # Create a new branch
     main_ref = repo.get_git_ref("heads/main")
     try:
-        try:
         repo.create_git_ref(ref=f"refs/heads/{BRANCH_NAME}", sha=main_ref.object.sha)
     except Exception as e:
         if 'Reference already exists' in str(e):
