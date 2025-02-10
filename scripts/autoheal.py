@@ -12,7 +12,7 @@ RESOURCE_NAME = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME")
 
 # GitHub Credentials
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
-REPO_NAME = os.environ.get("GITHUB_REPO")  # Format: 'username/repository'
+REPO_NAME = os.environ.get("GITHUB_REPO", "")  # Ensure REPO_NAME is not None  # Format: 'username/repository'
 BRANCH_NAME = "autoheal-fix"
 
 def get_terraform_error():
@@ -54,6 +54,8 @@ def update_main_tf(fixed_code):
 def create_github_pr():
     """Create a new Git branch, commit the fix, and open a PR."""
     g = Github(GITHUB_TOKEN)
+    if not REPO_NAME:
+        raise ValueError("GITHUB_REPO environment variable is not set correctly.")
     repo = g.get_repo(REPO_NAME)
     
     # Create a new branch
