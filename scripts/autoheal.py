@@ -17,11 +17,15 @@ BRANCH_NAME = "autoheal-fix"
 
 def get_terraform_error():
     """Reads Terraform apply error from the GitHub Actions log file."""
-    log_path = "../terraform/tf_error_log"
+    log_path = "../terraform/tf_error_log.txt"
     try:
         with open(log_path, "r") as log_file:
-            error_log = log_file.read()
-        return error_log if error_log else "No error detected"
+            error_log = log_file.read().strip()
+        
+        if error_log and "Error" in error_log:
+            return error_log
+        else:
+            return "No error detected"
     except Exception as e:
         return str(e)
 
@@ -69,7 +73,8 @@ def create_github_pr():
 def main():
     """Main execution flow."""
     error_log = get_terraform_error()
-    if "Error" in error_log:
+    if error_log != "No error detected":
+        print(f"Terraform error detected:\n{error_log}")
         fix = get_openai_fix(error_log)
         update_main_tf(fix)
         create_github_pr()
