@@ -13,7 +13,8 @@ RESOURCE_NAME = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME")
 # GitHub Credentials
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 REPO_NAME = os.environ.get("REPO_NAME_SECRET", "")  # Ensure REPO_NAME is not None  # Ensure REPO_NAME is not None  # Format: 'username/repository'
-BRANCH_NAME = "autoheal-fix"
+import uuid
+BRANCH_NAME = f"autoheal-fix-{uuid.uuid4().hex[:8]}"
 
 def get_terraform_error():
     """Reads Terraform apply error from the GitHub Actions log file."""
@@ -43,7 +44,7 @@ def get_openai_fix(error_message):
             {"role": "user", "content": f"Fix this Terraform error: {error_message}"}
         ]
     )
-    return response.choices[0].message.content.strip()
+    return response.choices[0].message.content.strip().split('```')[1] if '```' in response.choices[0].message.content else response.choices[0].message.content.strip()
 
 def update_main_tf(fixed_code):
     """Update the main.tf file with the AI-generated fix."""
