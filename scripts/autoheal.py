@@ -17,7 +17,7 @@ BRANCH_NAME = "autoheal-fix"
 
 def get_terraform_error():
     """Reads Terraform apply error from the GitHub Actions log file."""
-    log_path = "../tf_error_log.txt"
+    log_path = "terraform/tf_error_log.txt"
     try:
         with open(log_path, "r") as log_file:
             error_log = log_file.read().strip()
