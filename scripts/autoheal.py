@@ -1,20 +1,3 @@
-# Re-run the extraction and modification since the execution state was reset
-
-import zipfile
-import os
-import shutil
-
-# Define paths
-uploaded_zip_path = "/mnt/data/autoheal-main.zip"
-extracted_path = "/mnt/data/autoheal_extracted"
-fixed_zip_path = "/mnt/data/autoheal_exact_change.zip"
-
-# Extract the uploaded zip file
-with zipfile.ZipFile(uploaded_zip_path, 'r') as zip_ref:
-    zip_ref.extractall(extracted_path)
-
-# Define the corrected autoheal.py script
-updated_autoheal_script = """
 import os
 import subprocess
 import json
