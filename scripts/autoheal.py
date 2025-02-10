@@ -16,10 +16,12 @@ REPO_NAME = os.environ.get("GITHUB_REPO")  # Format: 'username/repository'
 BRANCH_NAME = "autoheal-fix"
 
 def get_terraform_error():
-    """Runs Terraform apply to capture the error."""
+    """Reads Terraform apply error from the GitHub Actions log file."""
+    log_path = "../terraform/tf_error_log"
     try:
-        result = subprocess.run(["terraform", "apply", "-auto-approve"], capture_output=True, text=True, cwd="../terraform")
-        return result.stderr if result.stderr else "No error detected"
+        with open(log_path, "r") as log_file:
+            error_log = log_file.read()
+        return error_log if error_log else "No error detected"
     except Exception as e:
         return str(e)
 
