@@ -83,8 +83,7 @@ def create_github_pr():
     
     # Create PR
     try:
-        try:
-        repo.create_pull(title="AutoHeal: Fix Terraform Deployment Error", body="Fixes applied using Azure OpenAI.", head=BRANCH_NAME, base="main")
+            repo.create_pull(title="AutoHeal: Fix Terraform Deployment Error", body="Fixes applied using Azure OpenAI.", head=BRANCH_NAME, base="main")
     except Exception as e:
         if 'Resource not accessible by integration' in str(e):
             print("Error: GitHub token lacks permission to create PRs. Use a Personal Access Token (PAT) with 'Contents: Write' and 'Pull Requests: Write' permissions.")
