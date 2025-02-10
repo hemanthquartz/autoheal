@@ -17,7 +17,7 @@ REPO_NAME = os.environ.get("REPO_NAME_SECRET", "")  # Ensure REPO_NAME is set
 BRANCH_NAME = f"autoheal-fix-{uuid.uuid4().hex[:8]}"
 
 def get_terraform_error():
-    \"\"\"Reads Terraform apply error from the GitHub Actions log file.\"\"\"
+    """Reads Terraform apply error from the GitHub Actions log file."""
     log_path = "terraform/tf_error_log.txt"
     try:
         with open(log_path, "r") as log_file:
@@ -31,7 +31,7 @@ def get_terraform_error():
         return str(e)
 
 def get_openai_fix(error_message, original_code):
-    \"\"\"Send Terraform error to Azure OpenAI and get the fixed Terraform code only.\"\"\"
+    """Send Terraform error to Azure OpenAI and get the fixed Terraform code only."""
     client = AzureOpenAI(
         api_version=API_VERSION,
         azure_endpoint=AZURE_ENDPOINT,
@@ -39,7 +39,7 @@ def get_openai_fix(error_message, original_code):
     )
 
     # Providing more context and asking only for corrected Terraform code
-    prompt = f\"\"\"
+    prompt = f"""
     I have a Terraform configuration that failed during deployment. 
     Below is the Terraform error log:
     ---
@@ -51,7 +51,7 @@ def get_openai_fix(error_message, original_code):
     ---
     Please provide only the corrected Terraform code as output, keeping everything else unchanged.
     Do not include explanations or descriptions, only return the modified code block.
-    \"\"\"
+    """
 
     response = client.chat.completions.create(
         model=RESOURCE_NAME,
@@ -68,7 +68,7 @@ def get_openai_fix(error_message, original_code):
     return response_text
 
 def update_main_tf(fixed_code):
-    \"\"\"Ensure only the relevant lines are modified while keeping everything else the same.\"\"\"
+    """Ensure only the relevant lines are modified while keeping everything else the same."""
     tf_path = "terraform/main.tf"
 
     # Read existing main.tf content
@@ -77,11 +77,11 @@ def update_main_tf(fixed_code):
 
     # Overwrite only modified parts while keeping everything else unchanged
     updated_content = []
-    modified_lines = fixed_code.strip().split("\\n")
+    modified_lines = fixed_code.strip().split("\n")
     for line in original_content:
         for modified_line in modified_lines:
             if modified_line.strip() and modified_line.split("=")[0].strip() in line:
-                line = modified_line + "\\n"  # Replace only the modified part
+                line = modified_line + "\n"  # Replace only the modified part
         updated_content.append(line)
 
     # Write back the updated content
@@ -89,7 +89,7 @@ def update_main_tf(fixed_code):
         file.writelines(updated_content)
 
 def create_github_pr():
-    \"\"\"Create a new Git branch, commit the fix, and open a PR.\"\"\"
+    """Create a new Git branch, commit the fix, and open a PR."""
     g = Github(GITHUB_TOKEN)
     if not REPO_NAME:
         print("Error: REPO_NAME_SECRET environment variable is missing. Ensure it is set in GitHub Actions secrets.")
@@ -126,10 +126,10 @@ def create_github_pr():
         return
 
 def main():
-    \"\"\"Main execution flow.\"\"\"
+    """Main execution flow."""
     error_log = get_terraform_error()
     if error_log != "No error detected":
-        print(f"Terraform error detected:\\n{error_log}")
+        print(f"Terraform error detected:\n{error_log}")
         
         # Read existing Terraform code
         tf_path = "terraform/main.tf"
