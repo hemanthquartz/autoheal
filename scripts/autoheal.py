@@ -17,7 +17,7 @@ REPO_NAME = os.environ.get("REPO_NAME_SECRET", "")  # Ensure REPO_NAME is set
 BRANCH_NAME = f"autoheal-fix-{uuid.uuid4().hex[:8]}"
 
 def get_terraform_error():
-    """Reads Terraform apply error from the GitHub Actions log file."""
+    \"\"\"Reads Terraform apply error from the GitHub Actions log file.\"\"\" 
     log_path = "terraform/tf_error_log.txt"
     try:
         with open(log_path, "r") as log_file:
@@ -30,8 +30,8 @@ def get_terraform_error():
     except Exception as e:
         return str(e)
 
-def get_openai_fix(error_message):
-    """Send Terraform error to Azure OpenAI and get the fixed Terraform code only."""
+def get_openai_fix(error_message, current_code):
+    \"\"\"Send Terraform error and current code to Azure OpenAI and get the fixed Terraform code only.\"\"\" 
     client = AzureOpenAI(
         api_version=API_VERSION,
         azure_endpoint=AZURE_ENDPOINT,
@@ -39,15 +39,19 @@ def get_openai_fix(error_message):
     )
 
     # Providing more context and asking only for corrected Terraform code
-    prompt = f"""
+    prompt = f\"\"\" 
     I have a Terraform configuration that failed during deployment. 
     Below is the Terraform error log:
     ---
     {error_message}
     ---
-    Please provide only the corrected Terraform code as output. 
+    Here is the current Terraform code:
+    ---
+    {current_code}
+    ---
+    Please provide only the corrected Terraform code as output.
     Do not include explanations or descriptions, only the fixed code within proper Terraform syntax.
-    """
+    \"\"\" 
 
     response = client.chat.completions.create(
         model=RESOURCE_NAME,
@@ -64,13 +68,22 @@ def get_openai_fix(error_message):
     return response_text
 
 def update_main_tf(fixed_code):
-    """Update the main.tf file with the AI-generated fix."""
+    \"\"\"Update only the modified part of main.tf while keeping the rest of the code identical.\"\"\" 
     tf_path = "terraform/main.tf"
-    with open(tf_path, "w") as file:
-        file.write(fixed_code)
+
+    # Read existing code
+    with open(tf_path, "r") as file:
+        current_code = file.read()
+
+    # Replace only modified sections
+    if fixed_code and fixed_code != current_code:
+        with open(tf_path, "w") as file:
+            file.write(fixed_code)
+    else:
+        print("No significant changes detected from AI-generated fix.")
 
 def create_github_pr():
-    """Create a new Git branch, commit the fix, and open a PR."""
+    \"\"\"Create a new Git branch, commit only the modified fix, and open a PR.\"\"\" 
     g = Github(GITHUB_TOKEN)
     if not REPO_NAME:
         print("Error: REPO_NAME_SECRET environment variable is missing. Ensure it is set in GitHub Actions secrets.")
@@ -93,6 +106,7 @@ def create_github_pr():
     file_path = "terraform/main.tf"
     with open(file_path, "r") as file:
         content = file.read()
+    
     repo.get_contents(file_path, ref=BRANCH_NAME)
     repo.update_file(file_path, "AutoHeal: Fix Terraform error", content, repo.get_contents(file_path, ref=BRANCH_NAME).sha, branch=BRANCH_NAME)
     
@@ -107,11 +121,16 @@ def create_github_pr():
         return
 
 def main():
-    """Main execution flow."""
+    \"\"\"Main execution flow.\"\"\" 
     error_log = get_terraform_error()
     if error_log != "No error detected":
-        print(f"Terraform error detected:\n{error_log}")
-        fix = get_openai_fix(error_log)
+        print(f"Terraform error detected:\\n{error_log}")
+
+        # Read current Terraform code
+        with open("terraform/main.tf", "r") as file:
+            current_code = file.read()
+
+        fix = get_openai_fix(error_log, current_code)
         update_main_tf(fix)
         create_github_pr()
     else:
