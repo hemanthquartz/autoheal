@@ -1,5 +1,4 @@
 # Define the corrected autoheal.py script
-corrected_autoheal_script = """
 import os
 from openai import AzureOpenAI
 
