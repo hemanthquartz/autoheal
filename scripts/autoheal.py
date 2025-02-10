@@ -47,7 +47,7 @@ def get_openai_fix(error_message):
 
 def update_main_tf(fixed_code):
     """Update the main.tf file with the AI-generated fix."""
-    tf_path = "../terraform/main.tf"
+    tf_path = "terraform/main.tf"
     with open(tf_path, "w") as file:
         file.write(fixed_code)
 
