@@ -79,10 +79,24 @@ def create_github_pr():
     with open(file_path, "r") as file:
         content = file.read()
     repo.get_contents(file_path, ref=BRANCH_NAME)
-    repo.update_file(file_path, "AutoHeal: Fix Terraform error", content, repo.get_contents(file_path).sha, branch=BRANCH_NAME)
+    repo.update_file(file_path, "AutoHeal: Fix Terraform error", content, repo.get_contents(file_path, ref=BRANCH_NAME).sha, branch=BRANCH_NAME)
     
     # Create PR
-    repo.create_pull(title="AutoHeal: Fix Terraform Deployment Error", body="Fixes applied using Azure OpenAI.", head=BRANCH_NAME, base="main")
+    try:
+        try:
+        repo.create_pull(title="AutoHeal: Fix Terraform Deployment Error", body="Fixes applied using Azure OpenAI.", head=BRANCH_NAME, base="main")
+    except Exception as e:
+        if 'Resource not accessible by integration' in str(e):
+            print("Error: GitHub token lacks permission to create PRs. Use a Personal Access Token (PAT) with 'Contents: Write' and 'Pull Requests: Write' permissions.")
+        else:
+            print(f"Error creating PR: {e}")
+        return
+    except Exception as e:
+        if 'Resource not accessible by integration' in str(e):
+            print("Error: GitHub token lacks permission to create PRs. Ensure it has 'pull-requests: write' permission.")
+        else:
+            print(f"Error creating PR: {e}")
+        return
 
 def main():
     """Main execution flow."""
