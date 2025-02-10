@@ -62,11 +62,15 @@ def create_github_pr():
     
     # Create a new branch
     main_ref = repo.get_git_ref("heads/main")
-    repo.create_git_ref(ref=f"refs/heads/{BRANCH_NAME}", sha=main_ref.object.sha)
+    try:
+        repo.create_git_ref(ref=f"refs/heads/{BRANCH_NAME}", sha=main_ref.object.sha)
+    except Exception as e:
+        print(f"Error creating branch: {e}. Ensure the GitHub token has 'contents: write' permissions.")
+        return
     
     # Commit changes
     file_path = "terraform/main.tf"
-    with open(f"../{file_path}", "r") as file:
+    with open(file_path, "r") as file:
         content = file.read()
     repo.get_contents(file_path, ref=BRANCH_NAME)
     repo.update_file(file_path, "AutoHeal: Fix Terraform error", content, repo.get_contents(file_path).sha, branch=BRANCH_NAME)
