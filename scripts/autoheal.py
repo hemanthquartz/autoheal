@@ -63,7 +63,14 @@ def create_github_pr():
     # Create a new branch
     main_ref = repo.get_git_ref("heads/main")
     try:
+        try:
         repo.create_git_ref(ref=f"refs/heads/{BRANCH_NAME}", sha=main_ref.object.sha)
+    except Exception as e:
+        if 'Reference already exists' in str(e):
+            print(f"Branch {BRANCH_NAME} already exists. Proceeding with commit and PR.")
+        else:
+            print(f"Error creating branch: {e}. Ensure the GitHub token has 'contents: write' permissions.")
+            return
     except Exception as e:
         print(f"Error creating branch: {e}. Ensure the GitHub token has 'contents: write' permissions.")
         return
