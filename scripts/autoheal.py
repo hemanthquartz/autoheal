@@ -25,7 +25,7 @@ REPO_NAME = os.environ.get("REPO_NAME_SECRET", "")
 BRANCH_NAME = f"autoheal-fix-{uuid.uuid4().hex[:8]}"
 
 def get_terraform_error():
-    \"\"\"Reads Terraform apply error from the GitHub Actions log file.\"\"\"
+    """Reads Terraform apply error from the GitHub Actions log file."""
     log_path = "terraform/tf_error_log.txt"
     try:
         with open(log_path, "r") as log_file:
@@ -39,14 +39,14 @@ def get_terraform_error():
         return str(e)
 
 def get_openai_fix(error_message, original_code):
-    \"\"\"Send error to Azure OpenAI and get the fixed code in correct format.\"\"\"
+    """Send error to Azure OpenAI and get the fixed code in correct format."""
     client = AzureOpenAI(
         api_version=API_VERSION,
         azure_endpoint=AZURE_ENDPOINT,
         api_key=API_KEY
     )
 
-    prompt = f\"\"\"
+    prompt = f"""
     I have a configuration file that failed during deployment. 
     Below is the error log:
     ---
@@ -58,7 +58,7 @@ def get_openai_fix(error_message, original_code):
     ---
     Please provide only the corrected file content in its correct format (YAML, JSON, Terraform, etc.).
     Do not include explanations or descriptions, only return the corrected file content.
-    \"\"\"
+    """
 
     response = client.chat.completions.create(
         model=RESOURCE_NAME,
@@ -74,7 +74,7 @@ def get_openai_fix(error_message, original_code):
     return response_text
 
 def format_file_content(file_path, content):
-    \"\"\"Format the modified file based on file type.\"\"\"
+    """Format the modified file based on file type."""
     if file_path.endswith((".yaml", ".yml")):
         try:
             parsed_yaml = yaml.safe_load(content)
@@ -105,12 +105,11 @@ def format_file_content(file_path, content):
     return content
 
 def update_modified_file(fixed_code, file_path):
-    \"\"\"Replace only modified parts while keeping everything else unchanged and formatted correctly.\"\"\"
-
+    """Replace only modified parts while keeping everything else unchanged and formatted correctly."""
     with open(file_path, "r") as file:
         original_content = file.readlines()
 
-    modified_lines = fixed_code.strip().split("\\n")
+    modified_lines = fixed_code.strip().split("\n")
     modified_map = {}
     for line in modified_lines:
         if "=" in line or ":" in line:
@@ -123,7 +122,7 @@ def update_modified_file(fixed_code, file_path):
         if "=" in stripped_line or ":" in stripped_line:
             key = stripped_line.split("=")[0].strip() if "=" in stripped_line else stripped_line.split(":")[0].strip()
             if key in modified_map:
-                line = modified_map[key] + "\\n"
+                line = modified_map[key] + "\n"
                 del modified_map[key]  
         updated_content.append(line)
 
@@ -133,7 +132,7 @@ def update_modified_file(fixed_code, file_path):
         file.write(formatted_content)
 
 def create_github_pr(file_path):
-    \"\"\"Create a new Git branch, commit the fix, and open a PR.\"\"\"
+    """Create a new Git branch, commit the fix, and open a PR."""
     g = Github(GITHUB_TOKEN)
     if not REPO_NAME:
         print("Error: REPO_NAME_SECRET environment variable is missing. Ensure it is set in GitHub Actions secrets.")
@@ -166,10 +165,10 @@ def create_github_pr(file_path):
         return
 
 def main():
-    \"\"\"Main execution flow.\"\"\"
+    """Main execution flow."""
     error_log = get_terraform_error()
     if error_log != "No error detected":
-        print(f"Deployment error detected:\\n{error_log}")
+        print(f"Deployment error detected:\n{error_log}")
         
         modified_file_path = "terraform/main.tf"
 
