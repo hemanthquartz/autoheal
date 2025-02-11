@@ -2,7 +2,14 @@ import os
 import subprocess
 import json
 import uuid
-import yaml
+
+try:
+    import yaml
+except ModuleNotFoundError:
+    print("PyYAML not found. Installing...")
+    subprocess.check_call(["pip", "install", "PyYAML"])
+    import yaml  # Re-import after installation
+
 from openai import AzureOpenAI
 from github import Github
 
@@ -14,11 +21,11 @@ RESOURCE_NAME = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME")
 
 # GitHub Credentials
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
-REPO_NAME = os.environ.get("REPO_NAME_SECRET", "")  # Ensure REPO_NAME is set
+REPO_NAME = os.environ.get("REPO_NAME_SECRET", "")
 BRANCH_NAME = f"autoheal-fix-{uuid.uuid4().hex[:8]}"
 
 def get_terraform_error():
-    """Reads Terraform apply error from the GitHub Actions log file."""
+    \"\"\"Reads Terraform apply error from the GitHub Actions log file.\"\"\"
     log_path = "terraform/tf_error_log.txt"
     try:
         with open(log_path, "r") as log_file:
@@ -32,15 +39,14 @@ def get_terraform_error():
         return str(e)
 
 def get_openai_fix(error_message, original_code):
-    """Send Terraform error to Azure OpenAI and get the fixed code."""
+    \"\"\"Send error to Azure OpenAI and get the fixed code in correct format.\"\"\"
     client = AzureOpenAI(
         api_version=API_VERSION,
         azure_endpoint=AZURE_ENDPOINT,
         api_key=API_KEY
     )
 
-    # Providing more context and asking only for corrected Terraform code
-    prompt = f"""
+    prompt = f\"\"\"
     I have a configuration file that failed during deployment. 
     Below is the error log:
     ---
@@ -50,80 +56,84 @@ def get_openai_fix(error_message, original_code):
     ---
     {original_code}
     ---
-    Please provide only the corrected file content as output, keeping everything else unchanged.
-    Do not include explanations or descriptions, only return the modified file in the correct format.
-    Ensure the output is a well-formatted file based on its type (Terraform, YAML, JSON, etc.).
-    """
+    Please provide only the corrected file content in its correct format (YAML, JSON, Terraform, etc.).
+    Do not include explanations or descriptions, only return the corrected file content.
+    \"\"\"
 
     response = client.chat.completions.create(
         model=RESOURCE_NAME,
         messages=[
-            {"role": "system", "content": "You are a configuration management expert, skilled in Terraform, YAML, and JSON."},
+            {"role": "system", "content": "You are a configuration expert who returns only corrected file content."},
             {"role": "user", "content": prompt}
         ]
     )
 
-    # Extract only the code block (assuming OpenAI formats it within triple backticks)
     response_text = response.choices[0].message.content.strip()
     if "```" in response_text:
         return response_text.split("```")[1].strip()
     return response_text
 
 def format_file_content(file_path, content):
-    """Format the modified file content based on file type."""
-    if file_path.endswith(".yaml") or file_path.endswith(".yml"):
+    \"\"\"Format the modified file based on file type.\"\"\"
+    if file_path.endswith((".yaml", ".yml")):
         try:
-            parsed_yaml = yaml.safe_load(content)  # Validate YAML format
-            return yaml.dump(parsed_yaml, default_flow_style=False)  # Pretty print YAML
+            parsed_yaml = yaml.safe_load(content)
+            return yaml.dump(parsed_yaml, default_flow_style=False)
         except yaml.YAMLError as e:
             print(f"Warning: YAML formatting failed: {e}")
-            return content  # Return original content if formatting fails
+            return content
 
     elif file_path.endswith(".json"):
         try:
-            parsed_json = json.loads(content)  # Validate JSON format
-            return json.dumps(parsed_json, indent=4)  # Pretty print JSON
+            parsed_json = json.loads(content)
+            return json.dumps(parsed_json, indent=4)
         except json.JSONDecodeError as e:
             print(f"Warning: JSON formatting failed: {e}")
-            return content  # Return original content if formatting fails
+            return content
 
-    return content  # Return as-is for other file types
+    elif file_path.endswith(".tf"):
+        try:
+            with open("temp_file.tf", "w") as temp_tf:
+                temp_tf.write(content)
+            subprocess.run(["terraform", "fmt", "temp_file.tf"], check=True)
+            with open("temp_file.tf", "r") as formatted_tf:
+                return formatted_tf.read()
+        except Exception as e:
+            print(f"Warning: Terraform formatting failed: {e}")
+            return content
+
+    return content
 
 def update_modified_file(fixed_code, file_path):
-    """Ensure only the relevant lines are modified while keeping everything else the same and formatted correctly."""
+    \"\"\"Replace only modified parts while keeping everything else unchanged and formatted correctly.\"\"\"
 
-    # Read existing file content
     with open(file_path, "r") as file:
         original_content = file.readlines()
 
-    # Convert fixed_code into a dictionary mapping keys to values
-    modified_lines = fixed_code.strip().split("\n")
+    modified_lines = fixed_code.strip().split("\\n")
     modified_map = {}
     for line in modified_lines:
-        if "=" in line or ":" in line:  # Handle both Terraform and YAML/JSON formats
+        if "=" in line or ":" in line:
             key = line.split("=")[0].strip() if "=" in line else line.split(":")[0].strip()
             modified_map[key] = line.strip()
 
-    # Replace only the modified parts while keeping everything else unchanged
     updated_content = []
     for line in original_content:
         stripped_line = line.strip()
         if "=" in stripped_line or ":" in stripped_line:
             key = stripped_line.split("=")[0].strip() if "=" in stripped_line else stripped_line.split(":")[0].strip()
             if key in modified_map:
-                line = modified_map[key] + "\n"  # Replace the line only if modified
-                del modified_map[key]  # Ensure no duplicates
+                line = modified_map[key] + "\\n"
+                del modified_map[key]  
         updated_content.append(line)
 
-    # Ensure correct formatting based on file type
     formatted_content = format_file_content(file_path, "".join(updated_content))
 
-    # Write back the updated content
     with open(file_path, "w") as file:
         file.write(formatted_content)
 
 def create_github_pr(file_path):
-    """Create a new Git branch, commit the fix, and open a PR."""
+    \"\"\"Create a new Git branch, commit the fix, and open a PR.\"\"\"
     g = Github(GITHUB_TOKEN)
     if not REPO_NAME:
         print("Error: REPO_NAME_SECRET environment variable is missing. Ensure it is set in GitHub Actions secrets.")
@@ -131,7 +141,6 @@ def create_github_pr(file_path):
 
     repo = g.get_repo(REPO_NAME)
     
-    # Create a new branch
     main_ref = repo.get_git_ref("heads/main")
     try:
         repo.create_git_ref(ref=f"refs/heads/{BRANCH_NAME}", sha=main_ref.object.sha)
@@ -142,13 +151,11 @@ def create_github_pr(file_path):
             print(f"Error creating branch: {e}. Ensure the GitHub token has 'contents: write' permissions.")
             return
 
-    # Commit changes
     with open(file_path, "r") as file:
         content = file.read()
     repo.get_contents(file_path, ref=BRANCH_NAME)
     repo.update_file(file_path, "AutoHeal: Fix Configuration Error", content, repo.get_contents(file_path, ref=BRANCH_NAME).sha, branch=BRANCH_NAME)
     
-    # Create PR
     try:
         repo.create_pull(title="AutoHeal: Fix Deployment Configuration Error", body="Fixes applied using Azure OpenAI.", head=BRANCH_NAME, base="main")
     except Exception as e:
@@ -159,15 +166,13 @@ def create_github_pr(file_path):
         return
 
 def main():
-    """Main execution flow."""
+    \"\"\"Main execution flow.\"\"\"
     error_log = get_terraform_error()
     if error_log != "No error detected":
-        print(f"Deployment error detected:\n{error_log}")
+        print(f"Deployment error detected:\\n{error_log}")
         
-        # Identify which file caused the error (assume Terraform file for now)
         modified_file_path = "terraform/main.tf"
 
-        # Read existing file content
         with open(modified_file_path, "r") as file:
             original_code = file.read()
 
