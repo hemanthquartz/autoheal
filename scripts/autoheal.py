@@ -51,6 +51,7 @@ def get_openai_fix(error_message, original_code):
     ---
     Please provide only the corrected Terraform code as output, keeping everything else unchanged.
     Do not include explanations or descriptions, only return the modified code block.
+    Ensure the output does not have duplicate lines and all other source lines remain unchanged.
     """
 
     response = client.chat.completions.create(
@@ -68,20 +69,30 @@ def get_openai_fix(error_message, original_code):
     return response_text
 
 def update_main_tf(fixed_code):
-    """Ensure only the relevant lines are modified while keeping everything else the same."""
+    """Ensure only the relevant lines are modified while keeping everything else the same and avoiding duplicates."""
     tf_path = "terraform/main.tf"
 
     # Read existing main.tf content
     with open(tf_path, "r") as file:
         original_content = file.readlines()
 
-    # Overwrite only modified parts while keeping everything else unchanged
-    updated_content = []
+    # Convert fixed_code into a dictionary mapping keys to values
     modified_lines = fixed_code.strip().split("\n")
+    modified_map = {}
+    for line in modified_lines:
+        if "=" in line:
+            key = line.split("=")[0].strip()
+            modified_map[key] = line.strip()
+
+    # Replace only the modified parts while keeping everything else unchanged
+    updated_content = []
     for line in original_content:
-        for modified_line in modified_lines:
-            if modified_line.strip() and modified_line.split("=")[0].strip() in line:
-                line = modified_line + "\n"  # Replace only the modified part
+        stripped_line = line.strip()
+        if "=" in stripped_line:
+            key = stripped_line.split("=")[0].strip()
+            if key in modified_map:
+                line = modified_map[key] + "\n"  # Replace the line only if modified
+                del modified_map[key]  # Ensure no duplicates
         updated_content.append(line)
 
     # Write back the updated content
