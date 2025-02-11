@@ -7,10 +7,10 @@ provider "azurerm" {
 }
 
 resource "azurerm_storage_account" "broken_storage" {
-  name                     = "validstoragename01" # Updated: Lowercase, alphanumeric, and within length requirement
+  name                     = "Invalid_Storage_Name"  # Error: Azure storage account names must be lowercase and alphanumeric
   resource_group_name      = "openai_rg"
   location                 = "East US"
-  account_tier             = "Standard" # Updated: Correct SKU name
+  account_tier             = "InvalidTier"  # Error: Invalid SKU name
   account_replication_type = "LRS"
 }
 
