@@ -1,3 +1,7 @@
+
+
+JOB_ID=$(gh run view $RUN_ID --log | grep -Eo '"id":[0-9]+' | awk -F: '{print $2}' | head -1)
+
 jobs:
   capture_logs:
     name: Capture Logs if aicicd Fails
