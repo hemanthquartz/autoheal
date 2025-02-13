@@ -1,3 +1,30 @@
+  capture_backend_logs:
+    name: Capture Backend Logs
+    needs: [aicicd]
+    if: failure()  # Run only if aicicd fails
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Backend Logs
+        run: |
+          mkdir -p logs
+          echo "Fetching logs from backend service..."
+          ssh user@backend-server "cat /var/log/backend-service.log" > logs/backend_error_log.txt
+          echo "Logs fetched successfully."
+
+      - name: Print Logs Before Uploading
+        run: |
+          echo "========== START OF BACKEND ERROR LOG =========="
+          cat logs/backend_error_log.txt || echo "No logs found."
+          echo "=========== END OF BACKEND ERROR LOG ==========="
+
+      - name: Upload Backend Error Logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-error-log
+          path: logs/backend_error_log.txt
+
+
+
 
 #!/bin/bash
 
