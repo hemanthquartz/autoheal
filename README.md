@@ -1,6 +1,48 @@
 
   capture_logs:
     name: Capture Logs if aicicd Fails
+    needs: [aicicd]  # Ensures it runs after aicicd
+    if: failure()  # Run only if aicicd fails
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install GitHub CLI (if not available)
+        run: |
+          if ! command -v gh &> /dev/null; then
+            sudo apt update && sudo apt install -y gh
+          fi
+
+      - name: Wait Until Logs Are Available
+        run: |
+          echo "Waiting for logs from aicicd..."
+          for i in {1..10}; do
+            LOG_OUTPUT=$(gh run view ${{ github.run_id }} --log || echo "pending")
+            if [[ "$LOG_OUTPUT" != "pending" ]]; then
+              echo "$LOG_OUTPUT" > logs/aicicd_error_log.txt
+              break
+            fi
+            echo "Logs not available yet... retrying in 10 seconds"
+            sleep 10
+          done
+
+      - name: Print Logs Before Uploading
+        run: |
+          echo "========== START OF AICICD ERROR LOG =========="
+          cat logs/aicicd_error_log.txt || echo "No logs captured."
+          echo "=========== END OF AICICD ERROR LOG ==========="
+
+      - name: Upload Logs as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aicicd-error-log
+          path: logs/aicicd_error_log.txt
+
+
+
+  capture_logs:
+    name: Capture Logs if aicicd Fails
     needs: [aicicd]
     if: failure()  # Run only if aicicd fails
     runs-on: ubuntu-latest
