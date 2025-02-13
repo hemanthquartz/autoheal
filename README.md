@@ -1,3 +1,35 @@
+
+  capture_logs:
+    name: Capture Logs if aicicd Fails
+    needs: [aicicd]
+    if: failure()  # Run only if aicicd fails
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Capture Logs Using mathiasvr/command-output
+        id: fetch_logs
+        uses: mathiasvr/command-output@v2.0.0
+        with:
+          run: |
+            mkdir -p logs
+            gh run view ${{ github.run_id }} --log > logs/aicicd_error_log.txt || echo "Error log capture failed."
+
+      - name: Print Captured Logs
+        run: |
+          echo "========== START OF CAPTURED LOGS =========="
+          cat logs/aicicd_error_log.txt || echo "No logs captured."
+          echo "=========== END OF CAPTURED LOGS ==========="
+
+      - name: Upload Logs as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aicicd-error-log
+          path: logs/aicicd_error_log.txt
+
+
+
   capture_backend_logs:
     name: Capture Backend Logs
     needs: [aicicd]
