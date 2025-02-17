@@ -1,3 +1,69 @@
+  capture_job_errors:
+    name: Capture Job Errors and Fetch Logs
+    runs-on: ubuntu-latest
+    needs: [terraform_plan, terraform_apply, terraform_destroy]  # Runs after all jobs
+    if: always()  # Ensures execution even if previous jobs fail
+    steps:
+      - name: Get Workflow Run Jobs (Failed Only)
+        run: |
+          FAILED_JOBS=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq '.jobs[] | select(.conclusion=="failure") | "\(.id) \(.name)"')
+          
+          echo "FAILED_JOBS<<EOF" >> $GITHUB_ENV
+          echo "$FAILED_JOBS" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+          echo "Captured Failed Job Details:"
+          echo "$FAILED_JOBS"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Debug Failed Job Details
+        run: |
+          echo "Failed Jobs Retrieved:"
+          echo "$FAILED_JOBS"
+
+      - name: Fetch and Extract Errors from Logs
+        run: |
+          echo "Extracting errors from failed job logs..." > errors.log
+          
+          while IFS= read -r line; do
+            JOB_ID=$(echo $line | awk '{print $1}')
+            JOB_NAME=$(echo $line | awk '{print substr($0, index($0,$2))}')
+            
+            echo "Fetching logs for Job ID: $JOB_ID, Job Name: $JOB_NAME"
+            
+            gh api repos/${{ github.repository }}/actions/jobs/${JOB_ID}/logs > job_${JOB_ID}.log
+
+            # Identify the failed step by looking for "Error:"
+            STEP_NAME=$(awk '/Error:/ {getline; print $0; exit}' job_${JOB_ID}.log)
+
+            if [[ ! -z "$STEP_NAME" ]]; then
+              echo "Identified failed step: $STEP_NAME"
+              echo "=== Error Log for Step: $STEP_NAME ===" >> errors.log
+
+              # Extract the relevant error message and the lines around it for context
+              awk '
+                /Error:/ {print "\n"$0; capturing=1; next}
+                capturing && /^[[:space:]]*$/ {capturing=0; next}
+                capturing {print $0}
+              ' job_${JOB_ID}.log >> errors.log
+
+              echo "Extracted errors for $STEP_NAME"
+            else
+              echo "No specific error step found for $JOB_NAME"
+            fi
+
+          done <<< "$FAILED_JOBS"
+
+          echo "Extracted Errors:"
+          cat errors.log
+          
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+
+
+
       - name: Get Workflow Run Jobs (Failed Only)
         run: |
           FAILED_JOBS=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq '.jobs[] | select(.conclusion=="failure") | "\(.id) \(.name)"')
