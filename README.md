@@ -1,38 +1,52 @@
-import os
-import json
-import logging
-import openai
-import azure.functions as func
+name: Verify JAR with OpenTelemetry on VM
 
-# Load OpenAI credentials from environment variables
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_ENDPOINT = os.getenv("OPENAI_ENDPOINT")
-OPENAI_DEPLOYMENT = os.getenv("OPENAI_DEPLOYMENT")
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
 
-openai.api_type = "azure"
-openai.api_key = OPENAI_API_KEY
-openai.api_base = OPENAI_ENDPOINT
-openai.api_version = "2023-03-15-preview"  # Use the correct API version
+jobs:
+  otel-verification:
+    runs-on: ubuntu-latest
 
-def main(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info("Processing OpenAI request.")
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-    try:
-        req_body = req.get_json()
-        prompt = req_body.get("prompt")
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: '17'
 
-        if not prompt:
-            return func.HttpResponse("Please provide a prompt", status_code=400)
+      - name: Install Maven
+        run: |
+          sudo apt update
+          sudo apt install -y maven
+          mvn -version
 
-        # Call OpenAI API
-        response = openai.ChatCompletion.create(
-            engine=OPENAI_DEPLOYMENT,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=100
-        )
+      - name: Build JAR with OpenTelemetry
+        run: mvn clean package -DskipTests=false
 
-        return func.HttpResponse(json.dumps(response), mimetype="application/json")
+      - name: Run JAR with OpenTelemetry
+        run: |
+          export OTEL_EXPORTER_OTLP_ENDPOINT="http://otel-collector:4317"
+          export OTEL_SERVICE_NAME="otel-demo"
+          export OTEL_TRACES_EXPORTER="otlp"
+          export OTEL_METRICS_EXPORTER="otlp"
+          export OTEL_LOGS_EXPORTER="otlp"
 
-    except Exception as e:
-        logging.error(str(e))
-        return func.HttpResponse(str(e), status_code=500)
+          nohup java -jar target/otel-demo-0.0.1-SNAPSHOT.jar --server.port=9090 > app.log 2>&1 &
+          sleep 10
+          cat app.log
+
+      - name: Verify OpenTelemetry Logs
+        run: grep "otel.instrumentation" app.log || echo "No OpenTelemetry logs found"
+
+      - name: Stop and Uninstall JAR
+        run: |
+          pkill -f "otel-demo-0.0.1-SNAPSHOT.jar" || echo "No process found"
+          rm -f app.log
