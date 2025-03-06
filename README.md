@@ -1,3 +1,60 @@
+
+jobs:
+  JarBuild:
+    name: Code Build
+    runs-on: uhg-runner
+    steps:
+      - name: Code Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 20
+        uses: actions/setup-java@v3
+        with:
+          java-version: 20
+          distribution: "temurin"
+          overwrite-settings: false
+
+      - name: Set up Maven
+        uses: stCarolas/setup-maven@v4.5
+        with:
+          maven-version: 3.8.8
+
+      - name: Build and Package with Maven
+        run: mvn clean package -DskipTests=false
+
+      - name: Ensure Target Directory Exists
+        run: mkdir -p scripts/lib target otel-setup
+
+      - name: Copy Required Files for OpenTelemetry Installation
+        run: |
+          # Copy the JAR file to the target directory
+          JAR_FILE=$(find ./ -name "otel-demo-*.jar" | grep -v "./target/")
+          if [ -n "$JAR_FILE" ] && [ "$JAR_FILE" != "./target/$(basename $JAR_FILE)" ]; then
+            echo "Copying $JAR_FILE to ./target/"
+            cp "$JAR_FILE" ./target/
+          else
+            echo "JAR file is already in target directory, skipping copy."
+          fi
+
+          # Copy OpenTelemetry setup scripts
+          cp scripts/startup.sh otel-setup/
+          cp scripts/install-otel.sh otel-setup/
+          cp scripts/config.yaml otel-setup/  # Example configuration file
+
+      - name: Grant Execute Permission to Scripts
+        run: chmod +x scripts/startup.sh scripts/install-otel.sh
+
+      - name: Upload OpenTelemetry Setup Files to Azure Storage
+        run: |
+          az storage blob upload-batch \
+            --account-name 'artifacts887d4b66' \
+            --destination 'otel-installation' \
+            --source 'otel-setup/' \
+            --auth-mode key \
+            --account-key 'DyeJ3JMH4nvLk0yRR13mSeSZViPDqOg+mxj1lNX16oqgZDlXfP1B9UQHoGTCJ@wk5dxoD2KrcGnflRq91JPeXb5w=' \
+            --overwrite
+
+
 index=* 
 | rex field=_raw "(?i)(?<message>.*?)(?:\s(?:stream_name|start process|session id|transaction id|user id|because|for|due to|reason|error code)\b.*)?$"
 | stats count by message
