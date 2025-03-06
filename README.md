@@ -1,3 +1,12 @@
+
+index=* 
+| rex field=_raw "(?i)^(?<message>[^,]+(?:\s[^,]+)?)"
+| stats count, earliest(_time) AS first_seen, latest(_time) AS last_seen by message
+| eval first_seen=strftime(first_seen, "%Y-%m-%d %H:%M:%S"), last_seen=strftime(last_seen, "%Y-%m-%d %H:%M:%S")
+| sort -count
+| head 20
+
+
 name: Verify JAR with OpenTelemetry on VM
 
 on:
