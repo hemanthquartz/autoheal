@@ -1,3 +1,9 @@
+index=* 
+| rex field=_raw "(?i)(?<message>.*?)(?:\s(?:stream_name|start process|session id|transaction id|user id|because|for|due to|reason|error code)\b.*)?$"
+| stats count by message
+| sort -count
+| head 20
+
 
 index=* 
 | rex field=_raw "(?i)^(?<message>[^,]+(?:\s[^,]+)?)"
