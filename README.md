@@ -1,6 +1,59 @@
 
 jobs:
   JarBuild:
+    name: Code Build and Upload
+    runs-on: uhg-runner
+    steps:
+      - name: Clean Workspace Before Checkout
+        run: |
+          echo "Deleting all files in the workspace..."
+          rm -rf ./*
+          echo "Workspace cleaned."
+
+      - name: Code Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 20
+        uses: actions/setup-java@v3
+        with:
+          java-version: 20
+          distribution: "temurin"
+          overwrite-settings: false
+
+      - name: Set up Maven
+        uses: stCarolas/setup-maven@v4.5
+        with:
+          maven-version: 3.8.8
+
+      - name: Ensure Required Directories Exist
+        run: mkdir -p target scripts/lib
+
+      - name: Build and Package with Maven
+        run: mvn clean package -DskipTests=false
+
+      - name: Move JAR to Target Directory
+        run: |
+          JAR_FILE=$(find ./ -name "otel-demo-*.jar" | grep -v "./target/")
+          echo "Moving $JAR_FILE to ./target/"
+          mv "$JAR_FILE" ./target/
+
+      - name: Grant Execute Permission to Scripts
+        run: chmod +x scripts/*.sh
+
+      - name: Upload All Required Files to Azure Storage
+        run: |
+          az storage blob upload-batch \
+            --account-name 'artifacts887d4b66' \
+            --destination 'otel-installation' \
+            --source 'target/' \
+            --source 'scripts/' \
+            --auth-mode key \
+            --account-key 'DyeJ3JMH4nvLk0yRR13mSeSZViPDqOg+mxj1lNX16oqgZDlXfP1B9UQHoGTCJ@wk5dxoD2KrcGnflRq91JPeXb5w=' \
+            --overwrite
+
+
+jobs:
+  JarBuild:
     name: Code Build
     runs-on: uhg-runner
     steps:
