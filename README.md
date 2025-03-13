@@ -3,3 +3,9 @@ index=<your_index> sourcetype IN ("kube:container:controller", "kube:container:k
 | where isnotnull(issue_detected)
 | stats count by sourcetype issue_detected
 | sort -count
+
+index=xdl_pde_devops_observability_prod sourcetype IN ("kube:container:controller", "kube:container:konnectivity-agent", "kube:container:gatekeeper-audit-container", "kube:container:azure-policy", "kube:container:cns-container", "msscs:azure:eventhub")
+| rex field=_raw "(?i)(?<issue_detected>error|fail|exception|timeout|unreachable|down|crash|denied|oom|terminated|unhealthy|container.*stopped|unauthorized|policy violation)"
+| where isnotnull(issue_detected)
+| stats count by sourcetype issue_detected
+| sort -count
