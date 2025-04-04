@@ -1,7 +1,13 @@
-index=your_index sourcetype=mscs:azure:eventhub 
-| spath input=body
-| table timeStamp clientIP httpStatus serverResponseLatency ruleName operationName backendPoolName sentBytes receivedBytes error_info sslCipher serverRooted transactionId
-| eval timeStamp=strftime(timeStamp, "%Y-%m-%d %H:%M:%S")
-| where httpStatus>=200 AND httpStatus<600
-| fillnull value="N/A" ruleName backendPoolName operationName error_info sslCipher serverRooted
-| fillnull value=0 serverResponseLatency sentBytes receivedBytes
+| inputlookup historical_data.csv
+| eval hour_of_day = strftime(timestamp, "%H")
+| eval day_of_week = strftime(timestamp, "%A")
+| eval day_of_month = strftime(timestamp, "%d")
+| fit RandomForestClassifier httpStatus from hour_of_day, day_of_week, day_of_month, clientIP, operationName, ruleName, backendPoolName, sentBytes, receivedBytes, serverResponseLatency, sslCipher, serverRooted into httpsstatuspredictor
+
+
+| inputlookup recent_logs.csv
+| eval hour_of_day = strftime(timestamp, "%H")
+| eval day_of_week = strftime(timestamp, "%A")
+| eval day_of_month = strftime(timestamp, "%d")
+| apply httpsstatuspredictor
+| where predicted(httpStatus)=500
