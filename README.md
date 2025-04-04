@@ -1,75 +1,26 @@
 | inputlookup historical_data.csv
-| eval hour_of_day = strftime(timestamp, "%H")
-| eval day_of_week = strftime(timestamp, "%A")
-| eval day_of_month = strftime(timestamp, "%d")
-| fit RandomForestClassifier httpStatus from hour_of_day, day_of_week, day_of_month, clientIP, operationName, ruleName, backendPoolName, sentBytes, receivedBytes, serverResponseLatency, sslCipher, serverRooted into httpsstatuspredictor
-
-
-| inputlookup recent_logs.csv
-| eval hour_of_day = strftime(timestamp, "%H")
-| eval day_of_week = strftime(timestamp, "%A")
-| eval day_of_month = strftime(timestamp, "%d")
-| apply httpsstatuspredictor
-| where predicted(httpStatus)=500
-
-
-| inputlookup forecast_test_data.csv
-| eval hour_of_day = strftime(timestamp, "%H")
-| eval day_of_week = strftime(timestamp, "%A")
-| eval day_of_month = strftime(timestamp, "%d")
-| apply httpsstatuspredictor
-| eval prediction_status = if(predicted(httpStatus) == httpStatus, "Correct", "Incorrect")
-| stats count as total, count(eval(prediction_status="Correct")) as correct, count(eval(prediction_status="Incorrect")) as incorrect
-| eval accuracy = round((correct / total) * 100, 2)
+| eval timestamp_epoch = strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+| bin timestamp_epoch span=5m  # Aggregate data by 5-minute intervals
+| stats count(eval(httpStatus=500)) as error_count by timestamp_epoch
+| eval lag_1 = mvindex(error_count, -1)
+| eval lag_2 = mvindex(error_count, -2)
+| eval lag_3 = mvindex(error_count, -3)
+| eval lag_4 = mvindex(error_count, -4)
+| eval lag_5 = mvindex(error_count, -5)
+| eval target = error_count  # What we want to forecast
+| table timestamp_epoch, target, lag_1, lag_2, lag_3, lag_4, lag_5
+| fit RandomForestRegressor target from lag_1, lag_2, lag_3, lag_4, lag_5 into httpsstatusforecaster
 
 
 
-| inputlookup forecast_test_data.csv
-| eval hour_of_day = strftime(timestamp, "%H")
-| eval day_of_week = strftime(timestamp, "%A")
-| eval day_of_month = strftime(timestamp, "%d")
-| apply httpsstatuspredictor
-| where predicted(httpStatus) != httpStatus
-| table timestamp, httpStatus, predicted(httpStatus), clientIP, operationName, ruleName, backendPoolName
-
-
-
-| inputlookup historical_http_errors.csv
-| eval hour_of_day = strftime(timestamp, "%H")
-| eval day_of_week = strftime(timestamp, "%A")
-| eval day_of_month = strftime(timestamp, "%d")
-| timechart span=5m count(httpStatus=500) as error_count
-| streamstats window=5 sum(error_count) as rolling_error_count
-| eval future_error = if(rolling_error_count > 0, 1, 0)
-| fit RandomForestClassifier future_error from rolling_error_count, hour_of_day, day_of_week, day_of_month into future_error_predictor
-
-
-
-| inputlookup recent_http_logs.csv
-| eval hour_of_day = strftime(timestamp, "%H")
-| eval day_of_week = strftime(timestamp, "%A")
-| eval day_of_month = strftime(timestamp, "%d")
-| timechart span=5m count(httpStatus=500) as error_count
-| streamstats window=5 sum(error_count) as rolling_error_count
-| apply future_error_predictor
-| where predicted(future_error) = 1
-
-
-| inputlookup forecast_test_data.csv
-| eval _time = strptime(timestamp, "%Y-%m-%d %H:%M:%S")
-| bin _time span=5m
-| stats count as total_errors by _time
-| where total_errors > 0
-| fit StateSpaceForecast total_errors into my_500error_forecaster
-
-
-| inputlookup forecast_test_data.csv
-| eval _time = strptime(timestamp, "%Y-%m-%d %H:%M:%S")
-| bin _time span=5m
-| stats count as total_errors by _time
-| where total_errors > 0
-| apply my_500error_forecaster
-| timechart span=5m sum(total_errors) as observed, sum(predicted(total_errors)) as forecasted
-
-
-
+| inputlookup recent_data.csv
+| eval timestamp_epoch = strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+| bin timestamp_epoch span=5m
+| stats count(eval(httpStatus=500)) as error_count by timestamp_epoch
+| eval lag_1 = mvindex(error_count, -1)
+| eval lag_2 = mvindex(error_count, -2)
+| eval lag_3 = mvindex(error_count, -3)
+| eval lag_4 = mvindex(error_count, -4)
+| eval lag_5 = mvindex(error_count, -5)
+| apply httpsstatusforecaster
+| table timestamp_epoch, predicted(target)
