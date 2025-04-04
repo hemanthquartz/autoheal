@@ -54,3 +54,22 @@
 | apply future_error_predictor
 | where predicted(future_error) = 1
 
+
+| inputlookup forecast_test_data.csv
+| eval _time = strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+| bin _time span=5m
+| stats count as total_errors by _time
+| where total_errors > 0
+| fit StateSpaceForecast total_errors into my_500error_forecaster
+
+
+| inputlookup forecast_test_data.csv
+| eval _time = strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+| bin _time span=5m
+| stats count as total_errors by _time
+| where total_errors > 0
+| apply my_500error_forecaster
+| timechart span=5m sum(total_errors) as observed, sum(predicted(total_errors)) as forecasted
+
+
+
