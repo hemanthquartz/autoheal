@@ -11,46 +11,34 @@
 | spath path=body.operationName output=operationName
 | spath path=body.backendPoolName output=backendPoolName
 | spath path=body.timeStamp output=timeStamp
-| where httpStatus = 502
+| eval _time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
+| where httpStatus = 502 OR httpStatus = 503
 
-| timechart span=5m count as error_count avg(serverResponseLatency) as avg_latency sum(sentBytes) as total_sent sum(receivedBytes) as total_received
+| stats count(eval(httpStatus=502)) as error_502_count, 
+        count(eval(httpStatus=503)) as error_503_count,
+        avg(serverResponseLatency) as avg_latency,
+        sum(sentBytes) as total_sent,
+        sum(receivedBytes) as total_received
+        by _time
 
-| eval rolling_mean_3 = mvavg(error_count, 3)
-| eval rolling_mean_5 = mvavg(error_count, 5)
-| eval rolling_std_3 = stdev(error_count, 3)
-| eval rolling_std_5 = stdev(error_count, 5)
-| eval exp_moving_avg = ema(error_count, 5)
+| streamstats window=5 current=false last(error_502_count) as lag_1,
+                                   last(error_502_count) as lag_2,
+                                   last(error_502_count) as lag_3,
+                                   last(error_502_count) as lag_4,
+                                   last(error_502_count) as lag_5,
+                                   last(avg_latency) as avg_latency_lag,
+                                   last(total_sent) as total_sent_lag,
+                                   last(total_received) as total_received_lag,
+                                   last(error_503_count) as error_503_lag
 
-| eval lag_1 = lag(error_count, 1)
-| eval lag_2 = lag(error_count, 2)
-| eval lag_3 = lag(error_count, 3)
-| eval lag_4 = lag(error_count, 4)
-| eval lag_5 = lag(error_count, 5)
+| fillnull value=0 lag_1 lag_2 lag_3 lag_4 lag_5 avg_latency_lag total_sent_lag total_received_lag error_503_lag
 
-| eval rolling_skew_3 = mstats.skew(error_count, 3)
-| eval rolling_kurt_3 = mstats.kurtosis(error_count, 3)
-| eval rolling_skew_5 = mstats.skew(error_count, 5)
-| eval rolling_kurt_5 = mstats.kurtosis(error_count, 5)
-
-| fillnull value=0 rolling_mean_3 rolling_mean_5 rolling_std_3 rolling_std_5 exp_moving_avg lag_1 lag_2 lag_3 lag_4 lag_5 rolling_skew_3 rolling_kurt_3 rolling_skew_5 rolling_kurt_5
-
-| fit RandomForestRegressor "error_count" from 
-    "rolling_mean_3", "rolling_mean_5", "rolling_std_3", "rolling_std_5", "exp_moving_avg",
-    "lag_1", "lag_2", "lag_3", "lag_4", "lag_5",
-    "rolling_skew_3", "rolling_kurt_3", "rolling_skew_5", "rolling_kurt_5", 
-    "avg_latency", "total_sent", "total_received"
+| fit RandomForestRegressor "error_502_count" from 
+    "lag_1", "lag_2", "lag_3", "lag_4", "lag_5", 
+    "avg_latency_lag", "total_sent_lag", "total_received_lag", "error_503_lag"
     into "rf_forecast_model_502"
 
-| fit GradientBoostingRegressor "error_count" from 
-    "rolling_mean_3", "rolling_mean_5", "rolling_std_3", "rolling_std_5", "exp_moving_avg",
-    "lag_1", "lag_2", "lag_3", "lag_4", "lag_5",
-    "rolling_skew_3", "rolling_kurt_3", "rolling_skew_5", "rolling_kurt_5", 
-    "avg_latency", "total_sent", "total_received"
+| fit GradientBoostingRegressor "error_502_count" from 
+    "lag_1", "lag_2", "lag_3", "lag_4", "lag_5", 
+    "avg_latency_lag", "total_sent_lag", "total_received_lag", "error_503_lag"
     into "gb_forecast_model_502"
-
-| apply "rf_forecast_model_502"
-| apply "gb_forecast_model_502"
-
-| eval predicted = (rf_forecast_model_502 + gb_forecast_model_502) / 2
-
-| table _time error_count rolling_mean_3 rolling_mean_5 rolling_std_3 rolling_std_5 exp_moving_avg lag_1 lag_2 lag_3 lag_4 lag_5 rolling_skew_3 rolling_kurt_3 rolling_skew_5 rolling_kurt_5 avg_latency total_sent total_received predicted
