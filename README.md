@@ -29,8 +29,11 @@
 | streamstats window=10 current=false avg(deviation_10) as rolling_std_10
 | streamstats window=20 current=false avg(deviation_20) as rolling_std_20
 
-| eval exp_moving_avg_10 = ema(error_502_count, 10)
-| eval exp_moving_avg_20 = ema(error_502_count, 20)
+| eval alpha_10 = 2 / (10 + 1)
+| eval alpha_20 = 2 / (20 + 1)
+| streamstats sum(eval(alpha_10 * error_502_count)) as exp_moving_avg_10
+| streamstats sum(eval(alpha_20 * error_502_count)) as exp_moving_avg_20
+
 | fillnull value=0 rolling_mean_10 rolling_mean_20 rolling_std_10 rolling_std_20 exp_moving_avg_10 exp_moving_avg_20
 
 | fit RandomForestRegressor error_502_count from 
