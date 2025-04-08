@@ -9,11 +9,6 @@
 
 | timechart span=5m count as error_502_count avg(serverResponseLatency) as avg_latency sum(sentBytes) as total_sent sum(receivedBytes) as total_received
 
-| eval row_index = streamstats count as row_index
-| eventstats max(row_index) as max_index
-| eval train_test_split_index = floor(0.75 * max_index)
-| eval dataset_type = if(row_index <= train_test_split_index, "train", "test")
-
 | streamstats window=5 current=false 
     last(error_502_count) as lag_1,
     last(error_502_count) as lag_2,
@@ -35,8 +30,6 @@
 
 | fillnull value=0 rolling_mean_10 rolling_mean_20 rolling_std_10 rolling_std_20
 
-| where dataset_type="train"
-
 | fit RandomForestRegressor error_502_count from 
     lag_1, lag_2, lag_3, lag_4, lag_5, 
     avg_latency_lag, total_sent_lag, total_received_lag,
@@ -49,7 +42,13 @@
     rolling_mean_10, rolling_mean_20, rolling_std_10, rolling_std_20
     into "gb_forecast_model_502"
 
-| where dataset_type="test"
+| append [ 
+    | makeresults count=20 
+    | eval _time=now() + (300 * (row_number() - 1))  // Generate future timestamps, 5 minutes apart
+    | eval lag_1=0, lag_2=0, lag_3=0, lag_4=0, lag_5=0, 
+           avg_latency_lag=0, total_sent_lag=0, total_received_lag=0,
+           rolling_mean_10=0, rolling_mean_20=0, rolling_std_10=0, rolling_std_20=0
+]
 
 | apply "rf_forecast_model_502"
 | rename predicted as rf_prediction
@@ -57,11 +56,6 @@
 | apply "gb_forecast_model_502"
 | rename predicted as gb_prediction
 
-| eval predicted = (coalesce(rf_prediction, 0) + coalesce(gb_prediction, 0)) / 2
+| eval predicted = coalesce((rf_prediction + gb_prediction) / 2, rf_prediction, gb_prediction)
 
-| eval squared_error = pow(error_502_count - predicted, 2)
-| eventstats sum(squared_error) as SSE, avg(error_502_count) as mean_value, count as N
-| eval SST = sum(pow(error_502_count - mean_value, 2))
-| eval R_squared = 1 - (SSE / SST)
-
-| table _time, error_502_count, predicted, R_squared
+| table _time, error_502_count, rolling_mean_10, rolling_mean_20, rolling_std_10, rolling_std_20, lag_1, lag_2, lag_3, lag_4, lag_5, predicted
