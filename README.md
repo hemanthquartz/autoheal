@@ -14,8 +14,6 @@
 | eval train_test_split_index = floor(0.75 * max_index)
 | eval dataset_type = if(row_index <= train_test_split_index, "train", "test")
 
-| where dataset_type="train"
-
 | streamstats window=5 current=false 
     last(error_502_count) as lag_1,
     last(error_502_count) as lag_2,
@@ -37,6 +35,8 @@
 
 | fillnull value=0 rolling_mean_10 rolling_mean_20 rolling_std_10 rolling_std_20
 
+| where dataset_type="train"
+
 | fit RandomForestRegressor error_502_count from 
     lag_1, lag_2, lag_3, lag_4, lag_5, 
     avg_latency_lag, total_sent_lag, total_received_lag,
@@ -48,3 +48,20 @@
     avg_latency_lag, total_sent_lag, total_received_lag,
     rolling_mean_10, rolling_mean_20, rolling_std_10, rolling_std_20
     into "gb_forecast_model_502"
+
+| where dataset_type="test"
+
+| apply "rf_forecast_model_502"
+| rename predicted as rf_prediction
+
+| apply "gb_forecast_model_502"
+| rename predicted as gb_prediction
+
+| eval predicted = (coalesce(rf_prediction, 0) + coalesce(gb_prediction, 0)) / 2
+
+| eval squared_error = pow(error_502_count - predicted, 2)
+| eventstats sum(squared_error) as SSE, avg(error_502_count) as mean_value, count as N
+| eval SST = sum(pow(error_502_count - mean_value, 2))
+| eval R_squared = 1 - (SSE / SST)
+
+| table _time, error_502_count, predicted, R_squared
