@@ -3,11 +3,14 @@
 | spath path=body.properties.serverResponseLatency output=serverResponseLatency
 | spath path=body.properties.sentBytes output=sentBytes
 | spath path=body.properties.receivedBytes output=receivedBytes
-| spath path=body.properties.timeStamp output=timeStamp
+| spath path=body.timeStamp output=timeStamp
 | eval _time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
 | where httpStatus = 502
+| where _time >= relative_time(now(), "-4h")
 
 | timechart span=5m count as error_502_count avg(serverResponseLatency) as avg_latency sum(sentBytes) as total_sent sum(receivedBytes) as total_received
+
+| eval data_split = if(_time < relative_time(now(), "-1h"), "training", "testing")
 
 | streamstats window=5 current=false 
     last(error_502_count) as lag_1,
@@ -28,30 +31,36 @@
 | streamstats window=10 current=false avg(deviation_10) as rolling_std_10
 | streamstats window=20 current=false avg(deviation_20) as rolling_std_20
 
-| eval alpha_10 = 2 / (10 + 1)
-| eval alpha_20 = 2 / (20 + 1)
-| streamstats sum(eval(alpha_10 * error_502_count)) as exp_moving_avg_10
-| streamstats sum(eval(alpha_20 * error_502_count)) as exp_moving_avg_20
-| fillnull value=0 rolling_mean_10 rolling_mean_20 rolling_std_10 rolling_std_20 exp_moving_avg_10 exp_moving_avg_20
+| fillnull value=0 rolling_mean_10 rolling_mean_20 rolling_std_10 rolling_std_20
 
-| table _time, error_502_count, lag_1, lag_2, lag_3, lag_4, lag_5, avg_latency, total_sent, total_received, rolling_mean_10, rolling_mean_20, rolling_std_10, rolling_std_20, exp_moving_avg_10, exp_moving_avg_20
-| where isnotnull(error_502_count) AND error_502_count > 0
-
+| where data_split = "training"
 | fit RandomForestRegressor error_502_count from 
     lag_1, lag_2, lag_3, lag_4, lag_5, 
-    rolling_mean_10, rolling_mean_20, rolling_std_10, rolling_std_20, 
-    exp_moving_avg_10, exp_moving_avg_20 
+    avg_latency_lag, total_sent_lag, total_received_lag,
+    rolling_mean_10, rolling_mean_20, rolling_std_10, rolling_std_20
     into "rf_forecast_model_502"
 
 | fit GradientBoostingRegressor error_502_count from 
     lag_1, lag_2, lag_3, lag_4, lag_5, 
-    rolling_mean_10, rolling_mean_20, rolling_std_10, rolling_std_20, 
-    exp_moving_avg_10, exp_moving_avg_20 
+    avg_latency_lag, total_sent_lag, total_received_lag,
+    rolling_mean_10, rolling_mean_20, rolling_std_10, rolling_std_20
     into "gb_forecast_model_502"
 
-| predict "rf_forecast_model_502" as rf_prediction future_timespan=10
-| predict "gb_forecast_model_502" as gb_prediction future_timespan=10
+| where data_split = "testing"
+| apply "rf_forecast_model_502"
+| rename predicted as rf_prediction
 
-| eval predicted = coalesce((rf_prediction + gb_prediction) / 2, 0)
+| apply "gb_forecast_model_502"
+| rename predicted as gb_prediction
 
-| table _time, error_502_count, rolling_mean_10, rolling_mean_20, rolling_std_10, rolling_std_20, exp_moving_avg_10, exp_moving_avg_20, lag_1, lag_2, lag_3, lag_4, lag_5, predicted
+| eval predicted = (rf_prediction + gb_prediction) / 2
+
+| eval residual = error_502_count - predicted
+| eval residual_squared = pow(residual, 2)
+| eval total_mean = avg(error_502_count)
+| eval total_variance = pow(error_502_count - total_mean, 2)
+
+| eventstats sum(residual_squared) as SS_residual, sum(total_variance) as SS_total
+| eval r_squared = 1 - (SS_residual / SS_total)
+
+| table _time, error_502_count, predicted, r_squared
