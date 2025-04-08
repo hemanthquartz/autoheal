@@ -3,12 +3,10 @@
 | spath path=body.properties.serverResponseLatency output=serverResponseLatency
 | spath path=body.properties.sentBytes output=sentBytes
 | spath path=body.properties.receivedBytes output=receivedBytes
-| spath path=body.timeStamp output=timeStamp
+| spath path=body.properties.timeStamp output=timeStamp
 | eval _time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
 | where httpStatus = 502
-
 | timechart span=5m count as error_502_count avg(serverResponseLatency) as avg_latency sum(sentBytes) as total_sent sum(receivedBytes) as total_received
-
 | streamstats window=5 current=false 
     last(error_502_count) as lag_1,
     last(error_502_count) as lag_2,
@@ -19,43 +17,27 @@
     last(total_sent) as total_sent_lag,
     last(total_received) as total_received_lag
 | fillnull value=0 lag_1 lag_2 lag_3 lag_4 lag_5 avg_latency_lag total_sent_lag total_received_lag
-
 | streamstats window=10 current=false avg(error_502_count) as rolling_mean_10
 | streamstats window=20 current=false avg(error_502_count) as rolling_mean_20
-
 | eval deviation_10 = abs(error_502_count - rolling_mean_10)
 | eval deviation_20 = abs(error_502_count - rolling_mean_20)
 | streamstats window=10 current=false avg(deviation_10) as rolling_std_10
 | streamstats window=20 current=false avg(deviation_20) as rolling_std_20
-
-| fillnull value=0 rolling_mean_10 rolling_mean_20 rolling_std_10 rolling_std_20
-
+| eval alpha_10 = 2 / (10 + 1)
+| eval alpha_20 = 2 / (20 + 1)
+| streamstats sum(eval(alpha_10 * error_502_count)) as exp_moving_avg_10
+| streamstats sum(eval(alpha_20 * error_502_count)) as exp_moving_avg_20
+| fillnull value=0 rolling_mean_10 rolling_mean_20 rolling_std_10 rolling_std_20 exp_moving_avg_10 exp_moving_avg_20
 | fit RandomForestRegressor error_502_count from 
-    lag_1, lag_2, lag_3, lag_4, lag_5, 
-    avg_latency_lag, total_sent_lag, total_received_lag,
-    rolling_mean_10, rolling_mean_20, rolling_std_10, rolling_std_20
-    into "rf_forecast_model_502"
-
+    rolling_mean_10, rolling_mean_20, rolling_std_10, rolling_std_20, 
+    exp_moving_avg_10, exp_moving_avg_20, lag_1, lag_2, lag_3, lag_4, lag_5 
+    into "rf_forecast_model_502" overwrite=t
 | fit GradientBoostingRegressor error_502_count from 
-    lag_1, lag_2, lag_3, lag_4, lag_5, 
-    avg_latency_lag, total_sent_lag, total_received_lag,
-    rolling_mean_10, rolling_mean_20, rolling_std_10, rolling_std_20
-    into "gb_forecast_model_502"
-
-| append [ 
-    | makeresults count=20 
-    | eval _time=now() + (300 * (row_number() - 1))  // Generate future timestamps, 5 minutes apart
-    | eval lag_1=0, lag_2=0, lag_3=0, lag_4=0, lag_5=0, 
-           avg_latency_lag=0, total_sent_lag=0, total_received_lag=0,
-           rolling_mean_10=0, rolling_mean_20=0, rolling_std_10=0, rolling_std_20=0
-]
-
-| apply "rf_forecast_model_502"
-| rename predicted as rf_prediction
-
-| apply "gb_forecast_model_502"
-| rename predicted as gb_prediction
-
-| eval predicted = coalesce((rf_prediction + gb_prediction) / 2, rf_prediction, gb_prediction)
-
-| table _time, error_502_count, rolling_mean_10, rolling_mean_20, rolling_std_10, rolling_std_20, lag_1, lag_2, lag_3, lag_4, lag_5, predicted
+    rolling_mean_10, rolling_mean_20, rolling_std_10, rolling_std_20, 
+    exp_moving_avg_10, exp_moving_avg_20, lag_1, lag_2, lag_3, lag_4, lag_5 
+    into "gb_forecast_model_502" overwrite=t
+| predict "rf_forecast_model_502" as rf_prediction future_timespan=10
+| predict "gb_forecast_model_502" as gb_prediction future_timespan=10
+| eval predicted = coalesce((rf_prediction + gb_prediction) / 2, 0)
+| where predicted > 5  # Adjust threshold based on your data
+| table _time, error_502_count, predicted
