@@ -37,37 +37,19 @@
     rolling_mean_10, rolling_mean_20, rolling_std_10, rolling_std_20
     into "rf_model_502"
 
-| fit GradientBoostingRegressor error_502_count from 
-    lag_1, lag_2, lag_3, lag_4, lag_5,
-    avg_latency_lag, total_sent_lag, total_received_lag,
-    rolling_mean_10, rolling_mean_20, rolling_std_10, rolling_std_20
-    into "gb_model_502"
-
-| fit LinearRegression error_502_count from 
-    lag_1, lag_2, lag_3, lag_4, lag_5,
-    avg_latency_lag, total_sent_lag, total_received_lag,
-    rolling_mean_10, rolling_mean_20, rolling_std_10, rolling_std_20
-    into "lr_model_502"
-
 | apply "rf_model_502"
 | rename predicted as rf_prediction
-| apply "gb_model_502"
-| rename predicted as gb_prediction
-| apply "lr_model_502"
-| rename predicted as lr_prediction
 
-| eval avg_prediction = (rf_prediction + gb_prediction + lr_prediction) / 3
+| eval error = error_502_count - rf_prediction
+| eval abs_error = abs(error)
+| eval squared_error = pow(error, 2)
 
-| score r2 error_502_count against rf_prediction as r2_rf
-| score rmse error_502_count against rf_prediction as rmse_rf
-| score mae error_502_count against rf_prediction as mae_rf
+| eventstats avg(error_502_count) as mean_actual
+| eval total_variance = pow(error_502_count - mean_actual, 2)
 
-| score r2 error_502_count against gb_prediction as r2_gb
-| score rmse error_502_count against gb_prediction as rmse_gb
-| score mae error_502_count against gb_prediction as mae_gb
+| eventstats sum(squared_error) as SSE, sum(total_variance) as SST, count as n
+| eval r2 = 1 - (SSE / SST)
+| eval rmse = sqrt(SSE / n)
+| eval mae = avg(abs_error)
 
-| score r2 error_502_count against lr_prediction as r2_lr
-| score rmse error_502_count against lr_prediction as rmse_lr
-| score mae error_502_count against lr_prediction as mae_lr
-
-| table _time error_502_count rf_prediction gb_prediction lr_prediction avg_prediction r2_* rmse_* mae_*
+| table _time error_502_count rf_prediction error abs_error squared_error r2 rmse mae
