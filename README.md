@@ -1,57 +1,64 @@
-| index=* sourcetype="mscs:azure:eventhub" source="*/network"
-| spath path=body.properties.httpStatus output=httpStatus
-| spath path=body.properties.serverResponseLatency output=serverResponseLatency
-| spath path=body.properties.sentBytes output=sentBytes
-| spath path=body.properties.receivedBytes output=receivedBytes
-| spath path=body.timeStamp output=timeStamp
-| eval _time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
-| where httpStatus = 502
+index=<your_index> sourcetype=<your_sourcetype>
+spath path=body.properties.requestPath output=path
+spath path=body.properties.clientRequestId output=clientRequestId
+spath path=body.properties.serverResponseLatency output=serverResponseLatency
+spath path=body.properties.clientIp output=clientIp
+spath path=body.properties.requestBytes output=requestBytes
+spath path=body.properties.responseBytes output=responseBytes
+spath path=body.properties.activityId output=activityId
+spath path=body.ruleName output=ruleName
+spath path=body.backendPoolName output=backendPoolName
+spath path=body.timestamp output=timestamp
+eval _time = strptime(timestamp, "%Y-%m-%dT%H:%M:%S")
+| eval httpStatus = tonumber(httpStatus)
+| stats count(eval(httpStatus==502)) as error_502_count,
+        avg(serverResponseLatency) as avg_latency,
+        sum(requestBytes) as total_sent,
+        sum(responseBytes) as total_received
+        by _time
+| sort _time
 
-| timechart span=5m count as error_502_count avg(serverResponseLatency) as avg_latency sum(sentBytes) as total_sent sum(receivedBytes) as total_received
+| streamstats window=5 current=false
+    last(error_502_count) as lag_1,
+    last(error_502_count,2) as lag_2,
+    last(error_502_count,3) as lag_3,
+    last(error_502_count,4) as lag_4,
+    last(error_502_count,5) as lag_5,
+    last(avg_latency) as avg_latency_lag,
+    last(total_sent) as total_sent_lag,
+    last(total_received) as total_received_lag
 
-| eval latency_x_sent = avg_latency * total_sent
-| eval latency_x_received = avg_latency * total_received
-| eval sent_minus_received = total_sent - total_received
+| fillnull value=0 lag_1 lag_2 lag_3 lag_4 lag_5 avg_latency_lag total_sent_lag total_received_lag
 
-| streamstats window=5 current=false 
-    last(avg_latency) as lag_1,
-    last(avg_latency, 2) as lag_2,
-    last(avg_latency, 3) as lag_3,
-    last(avg_latency, 4) as lag_4,
-    last(avg_latency, 5) as lag_5
+| streamstats window=10 current=false avg(error_502_count) as rolling_mean_10
+| streamstats window=20 current=false avg(error_502_count) as rolling_mean_20
+| eval deviation_10 = abs(error_502_count - rolling_mean_10)
+| eval deviation_20 = abs(error_502_count - rolling_mean_20)
+| streamstats window=10 current=false avg(deviation_10) as rolling_std_10
+| streamstats window=20 current=false avg(deviation_20) as rolling_std_20
+| eval alpha_10 = 2 / (10 + 1)
+| eval alpha_20 = 2 / (20 + 1)
+| streamstats window=1
+    eval(alpha_10 * error_502_count + (1 - alpha_10) * exp_moving_avg_10) as exp_moving_avg_10,
+    eval(alpha_20 * error_502_count + (1 - alpha_20) * exp_moving_avg_20) as exp_moving_avg_20
 
-| streamstats window=10 current=false 
-    avg(avg_latency) as rolling_mean_10,
-    stdev(avg_latency) as rolling_std_10
+| fillnull value=0 rolling_mean_10 rolling_mean_20 rolling_std_10 rolling_std_20 exp_moving_avg_10 exp_moving_avg_20
 
-| eval minute = tonumber(strftime(_time, "%M"))
-| eval hour = tonumber(strftime(_time, "%H"))
-| eval dayofweek = tonumber(strftime(_time, "%w"))
+| where isnotnull(error_502_count) AND error_502_count > 0
 
-| fillnull value=0 *
+| streamstats count as row_num
+| eventstats max(row_num) as total_rows
+| eval train_cutoff=round(total_rows * 0.8)
+| eval data_type=if(row_num <= train_cutoff, "train", "forecast")
 
-| eventstats count as total_rows
-| streamstats count as row_number
-| eval mode=if(row_number <= total_rows * 0.8, "train", "forecast")
-| eval target=if(mode="train", error_502_count, null())
-
-| fit GradientBoostingRegressor target from 
-    avg_latency, total_sent, total_received,
+| fit GradientBoostingRegressor error_502_count from
     lag_1, lag_2, lag_3, lag_4, lag_5,
-    rolling_mean_10, rolling_std_10,
-    latency_x_sent, latency_x_received, sent_minus_received,
-    minute, hour, dayofweek
-    into "mltk_forecast_model_502"
+    rolling_mean_10, rolling_mean_20,
+    rolling_std_10, rolling_std_20,
+    exp_moving_avg_10, exp_moving_avg_20
+    into "gb_forecast_model" when data_type="train"
 
-| where mode="forecast"
-| apply "mltk_forecast_model_502"
-| rename predicted as forecast_502
-| eval error = abs(forecast_502 - error_502_count)
-| eval squared_error = pow(forecast_502 - error_502_count, 2)
+| apply "gb_forecast_model" as gb_prediction into data_type="forecast"
 
-| eventstats avg(error_502_count) as mean_actual
-| eval ss_total = pow(error_502_count - mean_actual, 2)
-| eventstats sum(squared_error) as SSE sum(ss_total) as SST
-| eval r2_score = round(1 - (SSE / SST), 3)
-
-| table _time error_502_count forecast_502 error r2_score
+| where data_type="forecast"
+| table _time gb_prediction
