@@ -1,64 +1,40 @@
-index=<your_index> sourcetype=<your_sourcetype>
-spath path=body.properties.requestPath output=path
-spath path=body.properties.clientRequestId output=clientRequestId
-spath path=body.properties.serverResponseLatency output=serverResponseLatency
-spath path=body.properties.clientIp output=clientIp
-spath path=body.properties.requestBytes output=requestBytes
-spath path=body.properties.responseBytes output=responseBytes
-spath path=body.properties.activityId output=activityId
-spath path=body.ruleName output=ruleName
-spath path=body.backendPoolName output=backendPoolName
-spath path=body.timestamp output=timestamp
-eval _time = strptime(timestamp, "%Y-%m-%dT%H:%M:%S")
-| eval httpStatus = tonumber(httpStatus)
-| stats count(eval(httpStatus==502)) as error_502_count,
-        avg(serverResponseLatency) as avg_latency,
-        sum(requestBytes) as total_sent,
-        sum(responseBytes) as total_received
-        by _time
-| sort _time
+| index=* sourcetype="mscs:azure:eventhub" source="*/network;"
+| spath input=body.path httpStatus output=httpStatus
+| spath input=body path=body.properties.serverResponseLatency output=latency
+| spath input=body path=body.backendResponseCode output=backendCode
+| spath input=body path=body.properties.clientIP output=clientIP
+| spath input=body path=body.timeStamp output=timeStamp
+| eval _time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S%z")
+| eval is_500_error = if(httpStatus>=500 AND httpStatus<600, 1, 0)
+| timechart span=5m sum(is_500_error) as error_500_count
+| fillnull value=0 error_500_count
 
-| streamstats window=5 current=false
-    last(error_502_count) as lag_1,
-    last(error_502_count,2) as lag_2,
-    last(error_502_count,3) as lag_3,
-    last(error_502_count,4) as lag_4,
-    last(error_502_count,5) as lag_5,
-    last(avg_latency) as avg_latency_lag,
-    last(total_sent) as total_sent_lag,
-    last(total_received) as total_received_lag
+| streamstats current=f window=1 last(error_500_count) as lag_1
+| streamstats current=f window=2 last(error_500_count) as lag_2
+| streamstats current=f window=3 last(error_500_count) as lag_3
+| streamstats current=f window=4 last(error_500_count) as lag_4
+| streamstats current=f window=5 last(error_500_count) as lag_5
+| streamstats current=f window=6 last(error_500_count) as lag_6
+| streamstats current=f window=7 last(error_500_count) as lag_7
+| streamstats current=f window=8 last(error_500_count) as lag_8
+| eval avg_3 = (lag_1 + lag_2 + lag_3)/3
+| eval avg_5 = (lag_1 + lag_2 + lag_3 + lag_4 + lag_5)/5
+| eval volatility = stdev(lag_1, lag_2, lag_3, lag_4, lag_5)
+| eval trend = if(lag_1 > lag_2 AND lag_2 > lag_3, 1, 0)
+| eval target = error_500_count
+| fields _time target lag_1 lag_2 lag_3 lag_4 lag_5 avg_3 avg_5 volatility trend
 
-| fillnull value=0 lag_1 lag_2 lag_3 lag_4 lag_5 avg_latency_lag total_sent_lag total_received_lag
-
-| streamstats window=10 current=false avg(error_502_count) as rolling_mean_10
-| streamstats window=20 current=false avg(error_502_count) as rolling_mean_20
-| eval deviation_10 = abs(error_502_count - rolling_mean_10)
-| eval deviation_20 = abs(error_502_count - rolling_mean_20)
-| streamstats window=10 current=false avg(deviation_10) as rolling_std_10
-| streamstats window=20 current=false avg(deviation_20) as rolling_std_20
-| eval alpha_10 = 2 / (10 + 1)
-| eval alpha_20 = 2 / (20 + 1)
-| streamstats window=1
-    eval(alpha_10 * error_502_count + (1 - alpha_10) * exp_moving_avg_10) as exp_moving_avg_10,
-    eval(alpha_20 * error_502_count + (1 - alpha_20) * exp_moving_avg_20) as exp_moving_avg_20
-
-| fillnull value=0 rolling_mean_10 rolling_mean_20 rolling_std_10 rolling_std_20 exp_moving_avg_10 exp_moving_avg_20
-
-| where isnotnull(error_502_count) AND error_502_count > 0
-
+| eventstats count as total_rows
 | streamstats count as row_num
-| eventstats max(row_num) as total_rows
-| eval train_cutoff=round(total_rows * 0.8)
-| eval data_type=if(row_num <= train_cutoff, "train", "forecast")
+| eval split = round(total_rows * 0.8)
+| eval is_train = if(row_num <= split, 1, 0)
 
-| fit GradientBoostingRegressor error_502_count from
-    lag_1, lag_2, lag_3, lag_4, lag_5,
-    rolling_mean_10, rolling_mean_20,
-    rolling_std_10, rolling_std_20,
-    exp_moving_avg_10, exp_moving_avg_20
-    into "gb_forecast_model" when data_type="train"
+| eval model_features = "lag_1, lag_2, lag_3, lag_4, lag_5, avg_3, avg_5, volatility, trend"
 
-| apply "gb_forecast_model" as gb_prediction into data_type="forecast"
-
-| where data_type="forecast"
-| table _time gb_prediction
+| where is_train=1
+| fit RandomForestRegressor target from lag_1, lag_2, lag_3, lag_4, lag_5, avg_3, avg_5, volatility, trend into http_500_forecaster
+| where is_train=0
+| apply http_500_forecaster as forecasted
+| eval accuracy = round(100 - abs((forecasted - target) / (target + 0.01)) * 100, 2)
+| eval accuracy = if(accuracy < 0 OR isnull(accuracy), 0, accuracy)
+| table _time target forecasted accuracy
