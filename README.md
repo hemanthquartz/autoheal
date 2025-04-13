@@ -19,7 +19,14 @@
 | streamstats current=f window=8 last(error_500_count) as lag_8
 | eval avg_3 = (lag_1 + lag_2 + lag_3)/3
 | eval avg_5 = (lag_1 + lag_2 + lag_3 + lag_4 + lag_5)/5
-| eval volatility = stdev(lag_1, lag_2, lag_3, lag_4, lag_5)
+| eval mean_lag = (lag_1 + lag_2 + lag_3 + lag_4 + lag_5) / 5
+| eval volatility = sqrt(
+    pow(lag_1 - mean_lag, 2) +
+    pow(lag_2 - mean_lag, 2) +
+    pow(lag_3 - mean_lag, 2) +
+    pow(lag_4 - mean_lag, 2) +
+    pow(lag_5 - mean_lag, 2)
+    ) / 5
 | eval trend = if(lag_1 > lag_2 AND lag_2 > lag_3, 1, 0)
 | eval target = error_500_count
 | fields _time target lag_1 lag_2 lag_3 lag_4 lag_5 avg_3 avg_5 volatility trend
