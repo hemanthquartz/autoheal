@@ -145,19 +145,25 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-48h lates
 | eval _time = strptime(timestamp, "%Y-%m-%dT%H:%M:%S")
 | eval is_5xx = if(httpStatus >= 500 AND httpStatus < 600, 1, 0)
 
-| eval hour = strftime(_time, "%H"), day = strftime(_time, "%A")
 | bin _time span=5m
-| stats count(eval(is_5xx=1)) as error_count by _time, httpMethod, userAgent, backendPoolName, hour, day
-| sort 0 _time
-| streamstats window=5 current=f global=f count as row, 
-             last(error_count) as lag_1,
-             last(lag_1) as lag_2,
-             last(lag_2) as lag_3
+| stats sum(is_5xx) as error_5xx by _time, httpMethod, userAgent, backendPoolName
 
-| eval label=if(error_count>0,1,0)
-| eval httpMethod=coalesce(httpMethod, "unknown"), userAgent=coalesce(userAgent, "unknown"), backendPoolName=coalesce(backendPoolName, "unknown"), hour=coalesce(hour, "0"), day=coalesce(day, "unknown")
-| table _time, label, httpMethod, userAgent, backendPoolName, hour, day, lag_1, lag_2, lag_3
-| fit RandomForestClassifier label from httpMethod, userAgent, backendPoolName, hour, day, lag_1, lag_2, lag_3 into http_error_forecast_model
+| sort 0 _time
+| streamstats current=f window=1 last(error_5xx) as lag_1
+| streamstats current=f window=2 last(error_5xx) as lag_2
+| streamstats current=f window=3 last(error_5xx) as lag_3
+
+| eval hour=strftime(_time, "%H"), day=strftime(_time, "%A")
+| eval weekend=if(day="Saturday" OR day="Sunday", 1, 0)
+
+| eval label=if(error_5xx > 0, 1, 0)
+| eval httpMethod=coalesce(httpMethod, "unknown")
+| eval userAgent=coalesce(userAgent, "unknown")
+| eval backendPoolName=coalesce(backendPoolName, "unknown")
+
+| fields _time, label, lag_1, lag_2, lag_3, httpMethod, userAgent, backendPoolName, hour, day, weekend
+
+| fit RandomForestClassifier label from lag_1, lag_2, lag_3, httpMethod, userAgent, backendPoolName, hour, day, weekend into http_forecast_model_v2
 
 
 
@@ -172,23 +178,30 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-24h lates
 | eval _time = strptime(timestamp, "%Y-%m-%dT%H:%M:%S")
 | eval is_5xx = if(httpStatus >= 500 AND httpStatus < 600, 1, 0)
 
-| eval hour = strftime(_time, "%H"), day = strftime(_time, "%A")
 | bin _time span=5m
-| stats count(eval(is_5xx=1)) as error_count by _time, httpMethod, userAgent, backendPoolName, hour, day
-| sort 0 _time
-| streamstats window=5 current=f global=f count as row, 
-             last(error_count) as lag_1,
-             last(lag_1) as lag_2,
-             last(lag_2) as lag_3
+| stats sum(is_5xx) as error_5xx by _time, httpMethod, userAgent, backendPoolName
 
-| eval actual=if(error_count>0,1,0)
-| eval httpMethod=coalesce(httpMethod, "unknown"), userAgent=coalesce(userAgent, "unknown"), backendPoolName=coalesce(backendPoolName, "unknown"), hour=coalesce(hour, "0"), day=coalesce(day, "unknown")
-| apply http_error_forecast_model
-| rename "predicted(label)" as forecasted
+| sort 0 _time
+| streamstats current=f window=1 last(error_5xx) as lag_1
+| streamstats current=f window=2 last(error_5xx) as lag_2
+| streamstats current=f window=3 last(error_5xx) as lag_3
+
+| eval hour=strftime(_time, "%H"), day=strftime(_time, "%A")
+| eval weekend=if(day="Saturday" OR day="Sunday", 1, 0)
+| eval label=if(error_5xx > 0, 1, 0)
+| eval httpMethod=coalesce(httpMethod, "unknown")
+| eval userAgent=coalesce(userAgent, "unknown")
+| eval backendPoolName=coalesce(backendPoolName, "unknown")
+
+| apply http_forecast_model_v2
+| rename "predicted(label)" as forecasted, label as actual
+
 | eval match=if(actual==forecasted, "✔", "✖")
-| table _time, httpMethod, backendPoolName, actual, forecasted, match
+| table _time, actual, forecasted, match, httpMethod, backendPoolName, userAgent
 
 | eventstats count as total
 | stats count(eval(match="✔")) as correct, values(total) as total
+| eval accuracy = round((correct / total) * 100, 2)
+
 | eval accuracy=round((correct / total) * 100, 2)
 | appendpipe [| confusionmatrix actual forecasted]
