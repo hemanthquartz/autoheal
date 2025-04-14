@@ -1,47 +1,32 @@
-| index=* sourcetype="mscs:azure:eventhub" source="*/network;"
-| spath input=body.path httpStatus output=httpStatus
-| spath input=body path=body.properties.serverResponseLatency output=latency
-| spath input=body path=body.backendResponseCode output=backendCode
-| spath input=body path=body.properties.clientIP output=clientIP
-| spath input=body path=body.timeStamp output=timeStamp
-| eval _time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S%z")
-| eval is_500_error = if(httpStatus>=500 AND httpStatus<600, 1, 0)
-| timechart span=5m sum(is_500_error) as error_500_count
-| fillnull value=0 error_500_count
+index=* sourcetype="mscs:azure:eventhub" source="*/network;"
+| spath input=body.httpStatus output=httpStatus
+| spath input=body.clientIP output=clientIP
+| spath input=body.httpMethod output=httpMethod
+| spath input=body.userAgent output=userAgent
+| spath input=body.backendPoolName output=backendPoolName
+| spath input=body.timeStamp output=timestamp
+| eval _time = strptime(timestamp, "%Y-%m-%dT%H:%M:%S")
+| eval is_5xx = if(httpStatus >= 500 AND httpStatus < 600, 1, 0)
+| eval hour = strftime(_time, "%H"), day = strftime(_time, "%A")
+| table _time, is_5xx, httpMethod, userAgent, backendPoolName, hour, day
+| sort _time
+| streamstats count as row_number
+| eventstats max(row_number) as total_rows
+| eval split_point = round(total_rows * 0.8)
+| eval dataset = if(row_number <= split_point, "train", "forecast")
+| eval label = is_5xx
 
-| streamstats current=f window=1 last(error_500_count) as lag_1
-| streamstats current=f window=2 last(error_500_count) as lag_2
-| streamstats current=f window=3 last(error_500_count) as lag_3
-| streamstats current=f window=4 last(error_500_count) as lag_4
-| streamstats current=f window=5 last(error_500_count) as lag_5
-| streamstats current=f window=6 last(error_500_count) as lag_6
-| streamstats current=f window=7 last(error_500_count) as lag_7
-| streamstats current=f window=8 last(error_500_count) as lag_8
-| eval avg_3 = (lag_1 + lag_2 + lag_3)/3
-| eval avg_5 = (lag_1 + lag_2 + lag_3 + lag_4 + lag_5)/5
-| eval mean_lag = (lag_1 + lag_2 + lag_3 + lag_4 + lag_5) / 5
-| eval volatility = sqrt(
-    pow(lag_1 - mean_lag, 2) +
-    pow(lag_2 - mean_lag, 2) +
-    pow(lag_3 - mean_lag, 2) +
-    pow(lag_4 - mean_lag, 2) +
-    pow(lag_5 - mean_lag, 2)
-    ) / 5
-| eval trend = if(lag_1 > lag_2 AND lag_2 > lag_3, 1, 0)
-| eval target = error_500_count
-| fields _time target lag_1 lag_2 lag_3 lag_4 lag_5 avg_3 avg_5 volatility trend
+| eval httpMethod=coalesce(httpMethod, "unknown"), userAgent=coalesce(userAgent, "unknown"), backendPoolName=coalesce(backendPoolName, "unknown"), hour=coalesce(hour, "0"), day=coalesce(day, "unknown")
 
-| eventstats count as total_rows
-| streamstats count as row_num
-| eval split = round(total_rows * 0.8)
-| eval is_train = if(row_num <= split, 1, 0)
+| fit RandomForestClassifier label from httpMethod, userAgent, backendPoolName, hour, day into http_error_forecast_model when dataset="train"
+| apply http_error_forecast_model when dataset="forecast"
 
-| eval model_features = "lag_1, lag_2, lag_3, lag_4, lag_5, avg_3, avg_5, volatility, trend"
-
-| where is_train=1
-| fit RandomForestRegressor target from lag_1, lag_2, lag_3, lag_4, lag_5, avg_3, avg_5, volatility, trend into http_500_forecaster
-| where is_train=0
-| apply http_500_forecaster as forecasted
-| eval accuracy = round(100 - abs((forecasted - target) / (target + 0.01)) * 100, 2)
-| eval accuracy = if(accuracy < 0 OR isnull(accuracy), 0, accuracy)
-| table _time target forecasted accuracy
+| eval match = if(label == 'predicted(label)', 1, 0)
+| eventstats count as total_forecast
+| stats count(eval(match=1)) as correct count as total
+| eval accuracy = round((correct / total) * 100, 2)
+| fields accuracy, correct, total
+| appendpipe [
+    | search dataset="forecast"
+    | confusionmatrix label predicted(label)
+]
