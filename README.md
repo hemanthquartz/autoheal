@@ -94,3 +94,7 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-24h lates
 
 
 
+| eval match = if(actual == forecasted, 1, 0)
+| eventstats count as total
+| stats count(eval(match=1)) as correct, values(total) as total
+| eval accuracy = round((correct / total) * 100, 2)
