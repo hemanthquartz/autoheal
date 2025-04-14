@@ -98,3 +98,40 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-24h lates
 | eventstats count as total
 | stats count(eval(match=1)) as correct, values(total) as total
 | eval accuracy = round((correct / total) * 100, 2)
+
+
+
+index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-48h latest=-24h
+| spath path=body.properties.httpStatus output=httpStatus
+| spath path=body.properties.httpMethod output=httpMethod
+| spath path=body.properties.userAgent output=userAgent
+| spath path=body.backendPoolName output=backendPoolName
+| spath path=body.timeStamp output=timestamp
+| eval _time = strptime(timestamp, "%Y-%m-%dT%H:%M:%S")
+| eval is_5xx = if(httpStatus >= 500 AND httpStatus < 600, 1, 0)
+| eval hour = strftime(_time, "%H"), day = strftime(_time, "%A")
+| eval httpMethod=coalesce(httpMethod, "unknown"), userAgent=coalesce(userAgent, "unknown"), backendPoolName=coalesce(backendPoolName, "unknown")
+| table _time, is_5xx, httpMethod, userAgent, backendPoolName, hour, day
+| rename is_5xx as label
+| fit RandomForestClassifier label from httpMethod, userAgent, backendPoolName, hour, day into http_error_forecast_model
+
+
+index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-24h latest=now
+| spath path=body.properties.httpStatus output=httpStatus
+| spath path=body.properties.httpMethod output=httpMethod
+| spath path=body.properties.userAgent output=userAgent
+| spath path=body.backendPoolName output=backendPoolName
+| spath path=body.timeStamp output=timestamp
+| eval _time = strptime(timestamp, "%Y-%m-%dT%H:%M:%S")
+| eval is_5xx = if(httpStatus >= 500 AND httpStatus < 600, 1, 0)
+| eval hour = strftime(_time, "%H"), day = strftime(_time, "%A")
+| eval httpMethod=coalesce(httpMethod, "unknown"), userAgent=coalesce(userAgent, "unknown"), backendPoolName=coalesce(backendPoolName, "unknown")
+| table _time, is_5xx, httpMethod, userAgent, backendPoolName, hour, day
+| rename is_5xx as actual
+| apply http_error_forecast_model
+| rename "predicted(label)" as forecasted
+| eval match = if(actual == forecasted, 1, 0)
+| eventstats count as total
+| stats count(eval(match=1)) as correct, values(total) as total
+| eval accuracy = round((correct / total) * 100, 2)
+
