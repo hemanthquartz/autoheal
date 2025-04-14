@@ -143,17 +143,22 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-48h lates
 | spath path=body.backendPoolName output=backendPoolName
 | spath path=body.timeStamp output=timestamp
 | eval _time = strptime(timestamp, "%Y-%m-%dT%H:%M:%S")
-| sort 0 _time
 | eval is_5xx = if(httpStatus >= 500 AND httpStatus < 600, 1, 0)
+
 | eval hour = strftime(_time, "%H"), day = strftime(_time, "%A")
-| eval httpMethod = coalesce(httpMethod, "unknown")
-| eval userAgent = coalesce(userAgent, "unknown")
-| eval backendPoolName = coalesce(backendPoolName, "unknown")
-| streamstats current=f window=1 last(is_5xx) as is_5xx_lag1
-| streamstats current=f window=2 last(is_5xx) as is_5xx_lag2
-| eval label = is_5xx
-| table _time, label, httpMethod, userAgent, backendPoolName, hour, day, is_5xx_lag1, is_5xx_lag2
-| fit RandomForestClassifier label from httpMethod, userAgent, backendPoolName, hour, day, is_5xx_lag1, is_5xx_lag2 into http_error_forecast_model
+| bin _time span=5m
+| stats count(eval(is_5xx=1)) as error_count by _time, httpMethod, userAgent, backendPoolName, hour, day
+| sort 0 _time
+| streamstats window=5 current=f global=f count as row, 
+             last(error_count) as lag_1,
+             last(lag_1) as lag_2,
+             last(lag_2) as lag_3
+
+| eval label=if(error_count>0,1,0)
+| eval httpMethod=coalesce(httpMethod, "unknown"), userAgent=coalesce(userAgent, "unknown"), backendPoolName=coalesce(backendPoolName, "unknown"), hour=coalesce(hour, "0"), day=coalesce(day, "unknown")
+| table _time, label, httpMethod, userAgent, backendPoolName, hour, day, lag_1, lag_2, lag_3
+| fit RandomForestClassifier label from httpMethod, userAgent, backendPoolName, hour, day, lag_1, lag_2, lag_3 into http_error_forecast_model
+
 
 
 
@@ -165,26 +170,25 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-24h lates
 | spath path=body.backendPoolName output=backendPoolName
 | spath path=body.timeStamp output=timestamp
 | eval _time = strptime(timestamp, "%Y-%m-%dT%H:%M:%S")
-| sort 0 _time
 | eval is_5xx = if(httpStatus >= 500 AND httpStatus < 600, 1, 0)
+
 | eval hour = strftime(_time, "%H"), day = strftime(_time, "%A")
-| eval httpMethod = coalesce(httpMethod, "unknown")
-| eval userAgent = coalesce(userAgent, "unknown")
-| eval backendPoolName = coalesce(backendPoolName, "unknown")
-| streamstats current=f window=1 last(is_5xx) as is_5xx_lag1
-| streamstats current=f window=2 last(is_5xx) as is_5xx_lag2
-| rename is_5xx as actual
+| bin _time span=5m
+| stats count(eval(is_5xx=1)) as error_count by _time, httpMethod, userAgent, backendPoolName, hour, day
+| sort 0 _time
+| streamstats window=5 current=f global=f count as row, 
+             last(error_count) as lag_1,
+             last(lag_1) as lag_2,
+             last(lag_2) as lag_3
+
+| eval actual=if(error_count>0,1,0)
+| eval httpMethod=coalesce(httpMethod, "unknown"), userAgent=coalesce(userAgent, "unknown"), backendPoolName=coalesce(backendPoolName, "unknown"), hour=coalesce(hour, "0"), day=coalesce(day, "unknown")
 | apply http_error_forecast_model
 | rename "predicted(label)" as forecasted
-| eval match = if(actual == forecasted, 1, 0)
-| eval tp = if(actual==1 AND forecasted==1, 1, 0)
-| eval tn = if(actual==0 AND forecasted==0, 1, 0)
-| eval fp = if(actual==0 AND forecasted==1, 1, 0)
-| eval fn = if(actual==1 AND forecasted==0, 1, 0)
-| stats sum(tp) as TP, sum(tn) as TN, sum(fp) as FP, sum(fn) as FN, count(eval(match=1)) as correct, count as total
-| eval accuracy = round((correct / total) * 100, 2)
-| eval precision = round((TP / (TP + FP + 0.0001)) * 100, 2)
-| eval recall = round((TP / (TP + FN + 0.0001)) * 100, 2)
-| eval f1_score = round((2 * precision * recall / (precision + recall + 0.0001)), 2)
-| table TP, TN, FP, FN, accuracy, precision, recall, f1_score
+| eval match=if(actual==forecasted, "✔", "✖")
+| table _time, httpMethod, backendPoolName, actual, forecasted, match
 
+| eventstats count as total
+| stats count(eval(match="✔")) as correct, values(total) as total
+| eval accuracy=round((correct / total) * 100, 2)
+| appendpipe [| confusionmatrix actual forecasted]
