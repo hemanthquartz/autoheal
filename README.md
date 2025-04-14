@@ -49,3 +49,7 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;"
 | appendpipe [
     | confusionmatrix label predicted(label)
 ]
+
+| appendpipe [
+    | stats count by label, 'predicted(label)'
+]
