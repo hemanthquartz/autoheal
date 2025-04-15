@@ -91,15 +91,18 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-24h lates
 
 | apply http_forecast_model_ultimate
 | rename "predicted(label)" as forecasted, label as actual
+
 | eval match = if(actual == forecasted, "✔", "✖")
+| eval forecast_event = if(forecasted == 1 AND actual == 0, "⚠️ Forecasted 5xx", null())
+| eval actual_5xx = if(httpStatus >= 500, "🟥 Actual 5xx", null())
 
 | where httpStatus >= 500 OR forecasted = 1
+
+| table _time, httpStatus, actual, forecasted, match, forecast_event, actual_5xx, backendPoolName, httpMethod, userAgent_class, rolling_avg_5xx, latency, burst_score
 
 | eval true_positive = if(httpStatus >= 500 AND forecasted == 1, 1, 0)
 | eval false_negative = if(httpStatus >= 500 AND forecasted == 0, 1, 0)
 | eval false_positive = if(httpStatus < 500 AND forecasted == 1, 1, 0)
-
-| table _time, httpStatus, actual, forecasted, match, backendPoolName, httpMethod, userAgent_class, rolling_avg_5xx, latency, burst_score
 
 | eventstats count as total
 | stats 
@@ -109,3 +112,4 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-24h lates
     count(eval(false_positive == 1)) as false_alerts,
     values(total) as total_tested
 | eval accuracy = round((correct / total_5xx) * 100, 2)
+
