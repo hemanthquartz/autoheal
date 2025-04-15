@@ -61,12 +61,14 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-24h lates
 
 | apply http_forecast_model_tree_v1
 | rename "predicted(label)" as forecasted, label as actual
+
+| where httpStatus >= 500
+
 | eval match = if(actual == forecasted, "✔", "✖")
 
-| where httpStatus >= 500 OR forecasted=1
+| eventstats count as total_5xx
+| stats count(eval(match="✔")) as correct_forecasts, values(total_5xx) as total_5xx
+| eval accuracy = round((correct_forecasts / total_5xx) * 100, 2)
 
-| table _time, httpStatus, actual, forecasted, match, httpMethod, backendPoolName, latency, userAgent
-
-| eventstats count as total
-| stats count(eval(match="✔")) as correct, values(total) as total
-| eval accuracy = round((correct / total) * 100, 2)
+| eval forecasted=correct_forecasts, actual=total_5xx
+| table forecasted, actual, accuracy
