@@ -46,6 +46,7 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-48h lates
 
 
 
+
 index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-24h latest=now
 | spath path=body.properties.httpStatus output=httpStatus
 | spath path=body.properties.clientIP output=clientIP
@@ -94,8 +95,17 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-24h lates
 
 | where httpStatus >= 500 OR forecasted = 1
 
+| eval true_positive = if(httpStatus >= 500 AND forecasted == 1, 1, 0)
+| eval false_negative = if(httpStatus >= 500 AND forecasted == 0, 1, 0)
+| eval false_positive = if(httpStatus < 500 AND forecasted == 1, 1, 0)
+
 | table _time, httpStatus, actual, forecasted, match, backendPoolName, httpMethod, userAgent_class, rolling_avg_5xx, latency, burst_score
 
 | eventstats count as total
-| stats count(eval(match="✔")) as correct, values(total) as total
-| eval accuracy = round((correct / total) * 100, 2)
+| stats 
+    count(eval(httpStatus >= 500)) as total_5xx,
+    count(eval(true_positive == 1)) as correct,
+    count(eval(false_negative == 1)) as missed,
+    count(eval(false_positive == 1)) as false_alerts,
+    values(total) as total_tested
+| eval accuracy = round((correct / total_5xx) * 100, 2)
