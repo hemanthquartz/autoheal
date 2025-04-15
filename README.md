@@ -28,8 +28,7 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-48h lates
 | eval rolling_avg = (coalesce(lag_1,0) + lag_2 + lag_3 + lag_4 + lag_5) / 5
 | eval label = if(error_5xx > 0, 1, 0)
 
-| fit XGBoostClassifier label from rolling_avg, client_err, httpMethod, userAgent, backendPoolName, hour, day, weekend, latency into http_forecast_model_v5 class_weight=balanced max_depth=4 n_estimators=25 learning_rate=0.1
-
+| fit RandomForestClassifier label from rolling_avg, client_err, httpMethod, userAgent, backendPoolName, hour, day, weekend, latency into http_forecast_model_rf
 
 
 
@@ -62,13 +61,13 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-24h lates
 | eval rolling_avg = (coalesce(lag_1,0) + lag_2 + lag_3 + lag_4 + lag_5) / 5
 | eval label = if(is_5xx == 1, 1, 0)
 
-| apply http_forecast_model_v5
+| apply http_forecast_model_rf
 | rename "predicted(label)" as forecasted, label as actual
 | eval match = if(actual == forecasted, "✔", "✖")
 
 | where httpStatus >= 500 OR forecasted=1
 
-| table _time, httpStatus, actual, forecasted, match, 'probability(label)', latency, httpMethod, backendPoolName, userAgent
+| table _time, httpStatus, actual, forecasted, match, httpMethod, backendPoolName, userAgent
 
 | eventstats count as total
 | stats count(eval(match="✔")) as correct, values(total) as total
