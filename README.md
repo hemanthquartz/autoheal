@@ -6,10 +6,11 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-24h lates
 | spath path=body.backendPoolName output=backendPoolName
 | spath path=body.timeStamp output=timestamp
 | eval _time = strptime(timestamp, "%Y-%m-%dT%H:%M:%S")
+
 | eval is_5xx = if(httpStatus >= 500 AND httpStatus < 600, 1, 0)
 
 | bin _time span=5m
-| stats first(httpStatus) as httpStatus first(is_5xx) as error_5xx by _time, httpMethod, userAgent, backendPoolName
+| stats sum(is_5xx) as error_5xx values(httpStatus) as actual_http_status by _time, httpMethod, userAgent, backendPoolName
 
 | sort 0 _time
 | streamstats current=f window=1 last(error_5xx) as lag_1
@@ -27,11 +28,10 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-24h lates
 | apply http_forecast_model_v2
 | rename "predicted(label)" as forecasted, label as actual
 
+| where forecasted=1
+
 | eval match = if(actual == forecasted, "✔", "✖")
-
-| where actual=1 OR forecasted=1
-
-| table _time, httpStatus, actual, forecasted, match, httpMethod, backendPoolName, userAgent
-| eventstats count as total
-| stats count(eval(match="✔")) as correct, values(total) as total
-| eval accuracy = round((correct / total) * 100, 2)
+| table _time, actual_http_status, actual, forecasted, match, httpMethod, backendPoolName, userAgent
+| eventstats count as total_forecasted
+| stats count as forecasted_count values(total_forecasted) as total
+| eval accuracy = round((forecasted_count / total) * 100, 2)
