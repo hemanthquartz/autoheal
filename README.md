@@ -1,7 +1,7 @@
-| makemv delim="|" thresholds="2,3,4|1.5,2,2.5|0.3,0.4,0.5"
-| mvexpand thresholds
-| eval split=split(thresholds, ",")
-| eval f_count=mvindex(split, 0), err_rate=mvindex(split, 1), latency=mvindex(split, 2)
+| makeresults 
+| eval combos=mvappend("2,2.0,0.3", "2,2.0,0.4", "2,2.0,0.5", "3,2.5,0.3", "3,2.5,0.4", "3,2.5,0.5", "4,3.0,0.3", "4,3.0,0.4", "4,3.0,0.5")
+| mvexpand combos
+| eval f_count=mvindex(split(combos, ","), 0), err_rate=mvindex(split(combos, ","), 1), latency=mvindex(split(combos, ","), 2)
 | map search="
     search index=* sourcetype=mscs:azure:eventhub source=*network* earliest=-20m
     | spath path=body.properties.httpStatus output=httpStatus
@@ -11,7 +11,6 @@
     | spath path=body.timeStamp output=timeStamp
     | eval _time = strptime(timeStamp, \"%Y-%m-%dT%H:%M:%S\")
     | eval httpStatus = tonumber(httpStatus)
-    | eval is_500 = if(httpStatus >= 500, 1, 0)
     | bin _time span=1m
     | stats 
         avg(serverResponseLatency) as avg_latency,
@@ -29,8 +28,7 @@
     | eval future_500 = if(future_500_error_count >= '.f_count.' AND rolling_error_rate >= '.err_rate.' AND avg_latency >= '.latency.', 1, 0)
     | rename _time as forecast_time
     | eval verify_time = forecast_time + 600
-    | join type=left verify_time 
-        [
+    | join type=left verify_time [
         search index=* sourcetype=mscs:azure:eventhub source=*network* earliest=-10m
         | spath path=body.properties.httpStatus output=httpStatus
         | spath path=body.timeStamp output=timeStamp
@@ -38,7 +36,7 @@
         | eval actual_500 = if(tonumber(httpStatus) >= 500, 1, 0)
         | bin verify_time span=1m
         | stats max(actual_500) as actual_500 by verify_time
-        ]
+    ]
     | eval result_type = case(
         future_500=1 AND actual_500=1, \"True Positive\",
         future_500=1 AND actual_500=0, \"False Positive\",
@@ -46,5 +44,5 @@
         future_500=0 AND actual_500=0, \"True Negative\"
     )
     | stats count by result_type
-    | eval f_count=\"'.f_count.'\", err_rate=\"'.err_rate.'\", latency=\"'.latency.'\"
+    | eval combo=\"f='.f_count.',e='.err_rate.',l='.latency.'\"
 "
