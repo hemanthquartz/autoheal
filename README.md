@@ -37,15 +37,14 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 
 | eval forecasted_http_status = if('predicted(future_500)'=1, mvfilter(all_http_status>=500), null())
 | eval forecasted_http_status = mvindex(forecasted_http_status, 0)
-
 | eval actual_http_status = mvindex(actual_http_status, 0)
 
 | eval result_type = case(
-    isnull(forecasted_http_status) AND isnull(actual_http_status), "True Negative",
+    isnull(forecasted_http_status) AND isnull(actual_http_status), null(),
     isnotnull(forecasted_http_status) AND forecasted_http_status=actual_http_status, "True Positive",
     isnotnull(forecasted_http_status) AND isnull(actual_http_status), "False Positive",
     isnull(forecasted_http_status) AND isnotnull(actual_http_status), "Missed Forecast",
-    isnotnull(forecasted_http_status) AND forecasted_http_status!=actual_http_status, "Wrong Code Predicted"
+    isnotnull(forecasted_http_status) AND isnotnull(actual_http_status) AND forecasted_http_status != actual_http_status, "Wrong Code Predicted"
 )
 
 | eval forecast_time_est = strftime(forecast_time, "%Y-%m-%d %H:%M:%S %Z")
