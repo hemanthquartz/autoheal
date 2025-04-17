@@ -53,12 +53,15 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-30m
 
 | eval verify_time_est = strftime(verify_time, "%Y-%m-%d %I:%M:%S %p %Z")
 
-| eval result_type = case(
-    isnotnull(forecasted_http_status) AND isnotnull(actual_http_status) AND forecasted_http_status=actual_http_status, "True Positive",
-    isnotnull(forecasted_http_status) AND isnull(actual_http_status), "False Positive",
-    isnull(forecasted_http_status) AND isnotnull(actual_http_status), "Missed Forecast",
-    isnotnull(forecasted_http_status) AND isnotnull(actual_http_status) AND forecasted_http_status != actual_http_status, "Wrong Code Predicted",
-    true(), "True Negative"
+| eval result_type = if(isnull(actual_http_status),
+    null(),
+    case(
+      isnotnull(forecasted_http_status) AND forecasted_http_status=actual_http_status, "True Positive",
+      isnotnull(forecasted_http_status) AND isnull(actual_http_status), "False Positive",
+      isnull(forecasted_http_status) AND isnotnull(actual_http_status), "Missed Forecast",
+      isnotnull(forecasted_http_status) AND isnotnull(actual_http_status) AND forecasted_http_status != actual_http_status, "Wrong Code Predicted",
+      true(), "True Negative"
+    )
 )
 
 | table forecast_time_est, verify_time_est, forecasted_http_status, actual_http_status, result_type, probability(future_500), avg_latency, rolling_error_rate, severity_score, unique_clients
