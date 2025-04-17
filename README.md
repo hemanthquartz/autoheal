@@ -7,15 +7,18 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-30m
 | eval _time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
 | eval httpStatus = tonumber(httpStatus)
 
+| where httpStatus >= 500
 | bin _time span=1m
+
 | stats 
+    values(httpStatus) as all_http_status,
     avg(serverResponseLatency) as avg_latency,
     sum(sentBytes) as total_sent,
     sum(receivedBytes) as total_received,
-    count(eval(httpStatus >= 500)) as error_count,
-    values(eval(if(httpStatus>=500,httpStatus,null()))) as all_http_status,
+    count as error_count,
     dc(body.properties.clientIp) as unique_clients
   by _time
+
 | sort 0 _time
 
 | streamstats window=5 avg(avg_latency) as rolling_avg_latency
@@ -31,38 +34,42 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-30m
 
 | eval severity_score = avg_latency * rolling_error_rate
 
+| mvexpand all_http_status
+| eval predicted_error_code = all_http_status
+
+| eval hour=strftime(_time, "%H"), minute=strftime(_time, "%M")
+
+| fields _time, predicted_error_code, avg_latency, rolling_avg_latency, delta_latency, rolling_error_rate, delta_error, latency_spike, error_spike, severity_score, hour, minute, unique_clients
+
 | apply GBoostModel500Sensitive
 
 | rename _time as forecast_time
 | eval forecast_time_est = strftime(forecast_time, "%Y-%m-%d %I:%M:%S %p %Z")
+
 | eval verify_time = forecast_time + 600
 
-| join type=outer forecast_time
-    [ search index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-30m
+| join type=left verify_time
+    [ search index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-10m
       | spath path=body.properties.httpStatus output=httpStatus
-      | spath path=body.properties.serverResponseLatency output=serverResponseLatency
-      | spath path=body.properties.sentBytes output=sentBytes
-      | spath path=body.properties.receivedBytes output=receivedBytes
       | spath path=body.timeStamp output=timeStamp
-      | eval forecast_time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
+      | eval verify_time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
       | eval httpStatus = tonumber(httpStatus)
       | where httpStatus >= 500
-      | bin forecast_time span=1m
-      | stats values(httpStatus) as actual_http_status by forecast_time
+      | bin verify_time span=1m
+      | stats values(httpStatus) as actual_http_status by verify_time
     ]
 
-| eval forecasted_http_status = if('predicted(future_500)'=1, mvindex(all_http_status,0), null())
-| eval actual_http_status = mvindex(actual_http_status,0)
+| eval actual_http_status = mvindex(actual_http_status, 0)
 
 | eval verify_time_est = strftime(verify_time, "%Y-%m-%d %I:%M:%S %p %Z")
 
 | eval result_type = case(
     isnull(actual_http_status), null(),
-    isnotnull(forecasted_http_status) AND forecasted_http_status=actual_http_status, "True Positive",
-    isnotnull(forecasted_http_status) AND forecasted_http_status!=actual_http_status, "Wrong Code Predicted",
-    isnull(forecasted_http_status) AND isnotnull(actual_http_status), "Missed Forecast",
-    isnotnull(forecasted_http_status) AND isnull(actual_http_status), "False Positive"
+    predicted_error_code=actual_http_status, "True Positive",
+    isnotnull(predicted_error_code) AND isnull(actual_http_status), "False Positive",
+    isnull(predicted_error_code) AND isnotnull(actual_http_status), "Missed Forecast",
+    predicted_error_code != actual_http_status, "Wrong Code Predicted"
 )
 
-| table forecast_time_est, verify_time_est, forecasted_http_status, actual_http_status, result_type, probability(future_500), avg_latency, rolling_error_rate, severity_score, unique_clients
+| table forecast_time_est, verify_time_est, predicted_error_code, actual_http_status, result_type, probability(future_500), avg_latency, rolling_avg_latency, delta_latency, rolling_error_rate, delta_error, latency_spike, error_spike, severity_score, unique_clients
 | sort forecast_time_est desc
