@@ -25,7 +25,8 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 | eval verify_time = forecast_time + 600
 
 | join type=left verify_time 
-    [ search index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-10m
+    [
+    search index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-10m
     | spath path=body.properties.httpStatus output=httpStatus
     | spath path=body.timeStamp output=timeStamp
     | eval verify_time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
@@ -51,5 +52,6 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 | eval verify_time_est = strftime(verify_time, "%Y-%m-%d %H:%M:%S %Z")
 
 | table forecast_time_est, verify_time_est, forecasted_http_status, actual_http_status, result_type, probability(future_500), avg_latency, rolling_error_rate, severity_score, unique_clients
+| where isnotnull(result_type)
 | sort forecast_time_est desc
 | appendpipe [ stats count by result_type ]
