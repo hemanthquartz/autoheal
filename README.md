@@ -1,4 +1,4 @@
-index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
+index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-25m
 | spath path=body.properties.httpStatus output=httpStatus
 | spath path=body.properties.serverResponseLatency output=serverResponseLatency
 | spath path=body.properties.sentBytes output=sentBytes
@@ -26,7 +26,7 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 
 | join type=left verify_time 
     [
-    search index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-10m
+    search index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-15m
     | spath path=body.properties.httpStatus output=httpStatus
     | spath path=body.timeStamp output=timeStamp
     | eval verify_time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
@@ -48,10 +48,12 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
     isnotnull(forecasted_http_status) AND isnotnull(actual_http_status) AND forecasted_http_status != actual_http_status, "Wrong Code Predicted"
 )
 
-| eval forecast_time_est = strftime(forecast_time, "%Y-%m-%d %H:%M:%S %Z")
-| eval verify_time_est = strftime(verify_time, "%Y-%m-%d %H:%M:%S %Z")
+| eval forecast_time_est = strftime(forecast_time, "%Y-%m-%d %I:%M:%S %p %Z")
+| eval verify_time_est = strftime(verify_time, "%Y-%m-%d %I:%M:%S %p %Z")
+
+| where isnotnull(result_type)
 
 | table forecast_time_est, verify_time_est, forecasted_http_status, actual_http_status, result_type, probability(future_500), avg_latency, rolling_error_rate, severity_score, unique_clients
-| where isnotnull(result_type)
+
 | sort forecast_time_est desc
 | appendpipe [ stats count by result_type ]
