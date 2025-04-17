@@ -47,9 +47,8 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-30m
 
 | apply GBoostModel500Sensitive
 
-| rename _time as forecast_time
+| eval forecast_time = _time
 | eval forecast_time_est = strftime(forecast_time, "%Y-%m-%d %I:%M:%S %p %Z")
-
 | eval verify_time = forecast_time + 600
 
 | join type=left verify_time
@@ -60,11 +59,16 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-30m
       | eval httpStatus = tonumber(httpStatus)
       | where httpStatus >= 500
       | bin verify_time span=1m
-      | stats values(httpStatus) as actual_http_status by verify_time
+      | stats 
+          values(httpStatus) as actual_http_status,
+          count(eval(httpStatus=500)) as count_500_actual,
+          count(eval(httpStatus=502)) as count_502_actual,
+          count(eval(httpStatus=503)) as count_503_actual,
+          count(eval(httpStatus=504)) as count_504_actual
+      by verify_time
     ]
 
 | eval actual_http_status = mvindex(actual_http_status, 0)
-
 | eval verify_time_est = strftime(verify_time, "%Y-%m-%d %I:%M:%S %p %Z")
 
 | eval result_type = case(
@@ -75,5 +79,14 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-30m
     predicted_error_code != actual_http_status, "Wrong Code Predicted"
 )
 
-| table forecast_time_est, verify_time_est, predicted_error_code, actual_http_status, result_type, probability(future_500), avg_latency, rolling_avg_latency, delta_latency, rolling_error_rate, delta_error, latency_spike, error_spike, severity_score, total_5xx_errors, count_500, count_502, count_503, count_504, unique_clients
+| eval count_500_forecasted = if(predicted_error_code=500, 1, 0)
+| eval count_502_forecasted = if(predicted_error_code=502, 1, 0)
+| eval count_503_forecasted = if(predicted_error_code=503, 1, 0)
+| eval count_504_forecasted = if(predicted_error_code=504, 1, 0)
+
+| table forecast_time_est, verify_time_est, predicted_error_code, actual_http_status, result_type, probability(future_500),
+        count_500_forecasted, count_502_forecasted, count_503_forecasted, count_504_forecasted,
+        count_500_actual, count_502_actual, count_503_actual, count_504_actual,
+        avg_latency, rolling_avg_latency, delta_latency, rolling_error_rate, delta_error, latency_spike, error_spike, severity_score, total_5xx_errors, count_500, count_502, count_503, count_504, unique_clients
+
 | sort forecast_time_est desc
