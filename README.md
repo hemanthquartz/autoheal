@@ -7,14 +7,14 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-30m
 | eval _time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
 | eval httpStatus = tonumber(httpStatus)
 
-| bin _time span=30s
+| bin _time span=1m
 | stats 
     avg(serverResponseLatency) as avg_latency,
     sum(sentBytes) as total_sent,
     sum(receivedBytes) as total_received,
     count(eval(httpStatus >= 500)) as error_count,
-    dc(body.properties.clientIp) as unique_clients,
-    values(eval(if(httpStatus>=500,httpStatus,null()))) as all_http_status
+    values(eval(if(httpStatus>=500,httpStatus,null()))) as all_http_status,
+    dc(body.properties.clientIp) as unique_clients
   by _time
 | sort 0 _time
 
@@ -37,15 +37,18 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-30m
 | eval forecast_time_est = strftime(forecast_time, "%Y-%m-%d %I:%M:%S %p %Z")
 | eval verify_time = forecast_time + 600
 
-| join type=left verify_time
-    [ search index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-10m
+| join type=outer forecast_time
+    [ search index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-30m
       | spath path=body.properties.httpStatus output=httpStatus
+      | spath path=body.properties.serverResponseLatency output=serverResponseLatency
+      | spath path=body.properties.sentBytes output=sentBytes
+      | spath path=body.properties.receivedBytes output=receivedBytes
       | spath path=body.timeStamp output=timeStamp
-      | eval verify_time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
+      | eval forecast_time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
       | eval httpStatus = tonumber(httpStatus)
       | where httpStatus >= 500
-      | bin verify_time span=30s
-      | stats values(httpStatus) as actual_http_status by verify_time
+      | bin forecast_time span=1m
+      | stats values(httpStatus) as actual_http_status by forecast_time
     ]
 
 | eval forecasted_http_status = if('predicted(future_500)'=1, mvindex(all_http_status,0), null())
@@ -54,11 +57,11 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-30m
 | eval verify_time_est = strftime(verify_time, "%Y-%m-%d %I:%M:%S %p %Z")
 
 | eval result_type = case(
-    isnull(actual_http_status), null(),  /* <<<--- New strict rule */
-    isnotnull(forecasted_http_status) AND isnotnull(actual_http_status) AND forecasted_http_status=actual_http_status, "True Positive",
-    isnotnull(forecasted_http_status) AND actual_http_status!="" AND isnull(actual_http_status)=false() AND forecasted_http_status!=actual_http_status, "Wrong Code Predicted",
+    isnull(actual_http_status), null(),
+    isnotnull(forecasted_http_status) AND forecasted_http_status=actual_http_status, "True Positive",
+    isnotnull(forecasted_http_status) AND forecasted_http_status!=actual_http_status, "Wrong Code Predicted",
     isnull(forecasted_http_status) AND isnotnull(actual_http_status), "Missed Forecast",
-    isnotnull(forecasted_http_status) AND isnull(actual_http_status)=false(), "False Positive"
+    isnotnull(forecasted_http_status) AND isnull(actual_http_status), "False Positive"
 )
 
 | table forecast_time_est, verify_time_est, forecasted_http_status, actual_http_status, result_type, probability(future_500), avg_latency, rolling_error_rate, severity_score, unique_clients
