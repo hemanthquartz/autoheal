@@ -3,7 +3,7 @@
       | spath path=body.properties.httpStatus output=httpStatus
       | eval httpStatus = tonumber(httpStatus)
       | where httpStatus = 502
-      | stats count as count
+      | stats count as total_502_count
       | eval source = "RawLogCount"
     ]
     [ search index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-25m
@@ -25,8 +25,6 @@
         by _time
       | streamstats window=5 avg(avg_latency) as rolling_avg_latency
       | streamstats window=5 avg(error_count) as rolling_error_rate
-      | eval severity_score = avg_latency * rolling_error_rate
-      | eval hour=strftime(_time, "%H"), minute=strftime(_time, "%M")
       | rename _time as forecast_time
       | apply GBoostModel500
       | eval verify_time = forecast_time + 600
@@ -42,6 +40,6 @@
           ]
       | eval actual_http_status = mvindex(actual_http_status, 0)
       | where actual_http_status = 502
-      | stats count as count
+      | stats count as total_502_count
       | eval source = "ModelVerifiedCount"
     ]
