@@ -1,4 +1,4 @@
-index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-30m
+index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-24h
 | spath path=body.properties.httpStatus output=httpStatus
 | spath path=body.properties.serverResponseLatency output=serverResponseLatency
 | spath path=body.properties.sentBytes output=sentBytes
@@ -7,19 +7,18 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-30m
 | eval _time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
 | eval httpStatus = tonumber(httpStatus)
 
-| where httpStatus >= 500
 | bin _time span=1m
 
 | stats 
-    values(httpStatus) as all_http_status,
-    count as total_5xx_errors,
+    avg(serverResponseLatency) as avg_latency,
+    sum(sentBytes) as total_sent,
+    sum(receivedBytes) as total_received,
+    count as total_events,
+    count(eval(httpStatus>=500)) as total_5xx_errors,
     count(eval(httpStatus=500)) as count_500,
     count(eval(httpStatus=502)) as count_502,
     count(eval(httpStatus=503)) as count_503,
     count(eval(httpStatus=504)) as count_504,
-    avg(serverResponseLatency) as avg_latency,
-    sum(sentBytes) as total_sent,
-    sum(receivedBytes) as total_received,
     dc(body.properties.clientIp) as unique_clients
   by _time
 
@@ -56,19 +55,18 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 | eval _time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
 | eval httpStatus = tonumber(httpStatus)
 
-| where httpStatus >= 500
 | bin _time span=1m
 
 | stats 
-    values(httpStatus) as all_http_status,
-    count as total_5xx_errors,
+    avg(serverResponseLatency) as avg_latency,
+    sum(sentBytes) as total_sent,
+    sum(receivedBytes) as total_received,
+    count as total_http_status,
+    count(eval(httpStatus>=500)) as total_5xx_errors,
     count(eval(httpStatus=500)) as count_500,
     count(eval(httpStatus=502)) as count_502,
     count(eval(httpStatus=503)) as count_503,
     count(eval(httpStatus=504)) as count_504,
-    avg(serverResponseLatency) as avg_latency,
-    sum(sentBytes) as total_sent,
-    sum(receivedBytes) as total_received,
     dc(body.properties.clientIp) as unique_clients
   by _time
 
@@ -87,9 +85,6 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 
 | eval severity_score = avg_latency * rolling_error_rate
 
-| mvexpand all_http_status
-| eval predicted_error_code = all_http_status
-
 | apply GBoostModel500Sensitive
 
 | rename _time as forecast_time
@@ -102,7 +97,7 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
       | spath path=body.timeStamp output=timeStamp
       | eval verify_time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
       | eval httpStatus = tonumber(httpStatus)
-      | where httpStatus >= 500
+      | where httpStatus>=500
       | bin verify_time span=1m
       | stats 
           values(httpStatus) as actual_http_status,
@@ -113,24 +108,18 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
       by verify_time
     ]
 
-| eval actual_http_status = mvindex(actual_http_status, 0)
 | eval verify_time_est = strftime(verify_time, "%Y-%m-%d %I:%M:%S %p %Z")
 
 | eval result_type = case(
     isnull(actual_http_status), null(),
-    predicted_error_code=actual_http_status, "True Positive",
-    isnotnull(predicted_error_code) AND isnull(actual_http_status), "False Positive",
-    isnull(predicted_error_code) AND isnotnull(actual_http_status), "Missed Forecast",
-    predicted_error_code != actual_http_status, "Wrong Code Predicted"
+    future_500=1 AND isnotnull(actual_http_status), "True Positive",
+    future_500=1 AND isnull(actual_http_status), "False Positive",
+    future_500=0 AND isnotnull(actual_http_status), "Missed Forecast",
+    future_500=0 AND isnull(actual_http_status), "True Negative"
 )
 
-| eval count_500_forecasted = if(predicted_error_code=500, 1, 0)
-| eval count_502_forecasted = if(predicted_error_code=502, 1, 0)
-| eval count_503_forecasted = if(predicted_error_code=503, 1, 0)
-| eval count_504_forecasted = if(predicted_error_code=504, 1, 0)
-
-| table forecast_time_est, verify_time_est, predicted_error_code, actual_http_status, result_type, probability(future_500),
-        count_500_forecasted, count_502_forecasted, count_503_forecasted, count_504_forecasted,
+| table forecast_time_est, verify_time_est, future_500, actual_http_status, result_type, 
+        count_500, count_502, count_503, count_504,
         count_500_actual, count_502_actual, count_503_actual, count_504_actual,
-        avg_latency, rolling_avg_latency, delta_latency, rolling_error_rate, delta_error, latency_spike, error_spike, severity_score, total_5xx_errors, count_500, count_502, count_503, count_504, unique_clients
+        avg_latency, rolling_avg_latency, delta_latency, rolling_error_rate, delta_error, latency_spike, error_spike, severity_score, total_5xx_errors, total_http_status, unique_clients
 | sort forecast_time_est desc
