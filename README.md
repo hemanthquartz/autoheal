@@ -1,4 +1,4 @@
-index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1h
+index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-30m
 | spath path=body.properties.httpStatus output=httpStatus
 | spath path=body.properties.serverResponseLatency output=serverResponseLatency
 | spath path=body.properties.sentBytes output=sentBytes
@@ -13,6 +13,7 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1h
     avg(serverResponseLatency) as avg_latency,
     sum(sentBytes) as total_sent,
     sum(receivedBytes) as total_received,
+    count as total_http_status,
     count(eval(httpStatus>=500)) as total_5xx_errors,
     count(eval(httpStatus=500)) as count_500,
     count(eval(httpStatus=502)) as count_502,
@@ -35,21 +36,56 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1h
 | eval error_spike = if(abs(delta_error) > stdev_error, 1, 0)
 | eval severity_score = (avg_latency + rolling_error_rate + latency_spike + error_spike) * unique_clients
 
-| reverse
-| streamstats window=5 current=f last(count_500) as future_count_500
-| streamstats window=5 current=f last(count_502) as future_count_502
-| streamstats window=5 current=f last(count_503) as future_count_503
-| streamstats window=5 current=f last(count_504) as future_count_504
-| reverse
+| apply FinalModel_500
+| rename "predicted(future_count_500)" as predicted_count_500
 
-| where isnotnull(future_count_500)
+| apply FinalModel_502
+| rename "predicted(future_count_502)" as predicted_count_502
 
-| fields avg_latency rolling_avg_latency delta_latency rolling_error_rate delta_error latency_spike error_spike severity_score unique_clients future_count_500 future_count_502 future_count_503 future_count_504
+| apply FinalModel_503
+| rename "predicted(future_count_503)" as predicted_count_503
 
-| fit GradientBoostingRegressor future_count_500 from avg_latency rolling_avg_latency delta_latency rolling_error_rate delta_error latency_spike error_spike severity_score unique_clients into FinalModel_500 options n_estimators=300 learning_rate=0.8 max_depth=5
+| apply FinalModel_504
+| rename "predicted(future_count_504)" as predicted_count_504
 
-| fit GradientBoostingRegressor future_count_502 from avg_latency rolling_avg_latency delta_latency rolling_error_rate delta_error latency_spike error_spike severity_score unique_clients into FinalModel_502 options n_estimators=300 learning_rate=0.8 max_depth=5
+| eval forecast_time = _time
+| eval forecast_time_est = strftime(forecast_time, "%Y-%m-%d %I:%M:%S %p %Z")
+| eval verify_time = _time + 300  // verifying after 5 minutes
+| eval verify_time_est = strftime(verify_time, "%Y-%m-%d %I:%M:%S %p %Z")
 
-| fit GradientBoostingRegressor future_count_503 from avg_latency rolling_avg_latency delta_latency rolling_error_rate delta_error latency_spike error_spike severity_score unique_clients into FinalModel_503 options n_estimators=300 learning_rate=0.8 max_depth=5
+| join type=left verify_time
+    [
+    search index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
+    | spath path=body.properties.httpStatus output=httpStatus
+    | spath path=body.timeStamp output=timeStamp
+    | eval verify_time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
+    | eval httpStatus = tonumber(httpStatus)
+    | where httpStatus >= 500
+    | bin verify_time span=1m
+    | stats 
+        values(httpStatus) as actual_http_status,
+        count(eval(httpStatus=500)) as count_500_actual,
+        count(eval(httpStatus=502)) as count_502_actual,
+        count(eval(httpStatus=503)) as count_503_actual,
+        count(eval(httpStatus=504)) as count_504_actual
+      by verify_time
+    ]
 
-| fit GradientBoostingRegressor future_count_504 from avg_latency rolling_avg_latency delta_latency rolling_error_rate delta_error latency_spike error_spike severity_score unique_clients into FinalModel_504 options n_estimators=300 learning_rate=0.8 max_depth=5
+| eval result_type = case(
+    isnull(actual_http_status), null(),
+    isnotnull(actual_http_status) AND (predicted_count_500 + predicted_count_502 + predicted_count_503 + predicted_count_504) > 0, "True Positive",
+    isnotnull(actual_http_status) AND (predicted_count_500 + predicted_count_502 + predicted_count_503 + predicted_count_504) = 0, "Missed Forecast",
+    isnull(actual_http_status) AND (predicted_count_500 + predicted_count_502 + predicted_count_503 + predicted_count_504) > 0, "False Positive",
+    isnull(actual_http_status) AND (predicted_count_500 + predicted_count_502 + predicted_count_503 + predicted_count_504) = 0, "True Negative"
+)
+
+| eval total_actual_5xx = count_500_actual + count_502_actual + count_503_actual + count_504_actual
+| eval total_forecast_5xx = round(predicted_count_500,0) + round(predicted_count_502,0) + round(predicted_count_503,0) + round(predicted_count_504,0)
+
+| table forecast_time_est, verify_time_est,
+    predicted_count_500, predicted_count_502, predicted_count_503, predicted_count_504, total_forecast_5xx,
+    count_500_actual, count_502_actual, count_503_actual, count_504_actual, total_actual_5xx,
+    result_type,
+    avg_latency, rolling_avg_latency, delta_latency, rolling_error_rate, delta_error, latency_spike, error_spike, severity_score, total_5xx_errors, total_http_status, unique_clients
+
+| sort forecast_time_est desc
