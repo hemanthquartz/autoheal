@@ -14,7 +14,7 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
     sum(sentBytes) as total_sent,
     sum(receivedBytes) as total_received,
     count as total_http_status,
-    count(eval(httpStatus=502)) as count_502,  /* Only 502 focus */
+    count(eval(httpStatus=502)) as count_502,
     dc(body.properties.clientIp) as unique_clients
   by _time
 
@@ -42,7 +42,7 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 
 | apply forecast_502_model
 
-| eval future_502 = if('predicted(label)'=1, 502, null())  /* Only predict 502 */
+| eval future_502 = if('predicted(label)'=1, 502, null()) 
 
 | rename _time as forecast_time
 | eval forecast_time_est = strftime(forecast_time, "%Y-%m-%d %I:%M:%S %p EST")
@@ -55,7 +55,7 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
       | spath path=body.timeStamp output=timeStamp
       | eval verify_time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
       | eval httpStatus = tonumber(httpStatus)
-      | where httpStatus=502  /* Only actual 502s */
+      | where httpStatus=502
       | bin verify_time span=1m
       | stats 
           values(httpStatus) as actual_http_status,
@@ -73,10 +73,10 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
     isnull(future_502) AND isnull(actual_http_status), "True Negative"
 )
 
-| table forecast_time_est, verify_time_est, future_502, actual_http_status, result_type, 
-        avg_latency, latency_moving_avg, latency_change,
-        sent_moving_avg, received_moving_avg,
-        latency_to_sent_ratio, received_to_sent_ratio,
-        total_sent, total_received, unique_clients, count_502, actual_502_count
+| stats 
+    count(eval(future_502=502)) as forecast_502_count,
+    count(eval(actual_http_status=502)) as actual_502_count
+  by verify_time_est
 
-| sort forecast_time_est desc
+| table verify_time_est, forecast_502_count, actual_502_count
+| sort verify_time_est desc
