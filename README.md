@@ -4,7 +4,6 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 | spath path=body.properties.sentBytes output=sentBytes
 | spath path=body.properties.receivedBytes output=receivedBytes
 | spath path=body.timeStamp output=timeStamp
-
 | eval _time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
 | eval httpStatus = tonumber(httpStatus)
 
@@ -25,19 +24,25 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 
 | sort 0 _time
 
-| streamstats window=5 avg(avg_latency) as rolling_avg_latency
-| streamstats window=5 avg(total_5xx_errors) as rolling_error_rate
+| streamstats current=f window=1 last(avg_latency) as serverResponseLatency_lag1
+| streamstats current=f window=2 last(avg_latency) as serverResponseLatency_lag2
+| streamstats current=f window=3 last(avg_latency) as serverResponseLatency_lag3
 
-| delta avg_latency as delta_latency
-| delta rolling_error_rate as delta_error
+| streamstats current=f window=1 last(total_sent) as sentBytes_lag1
+| streamstats current=f window=2 last(total_sent) as sentBytes_lag2
+| streamstats current=f window=3 last(total_sent) as sentBytes_lag3
 
-| eventstats stdev(avg_latency) as stdev_latency
-| eventstats stdev(rolling_error_rate) as stdev_error
+| streamstats current=f window=1 last(total_received) as receivedBytes_lag1
+| streamstats current=f window=2 last(total_received) as receivedBytes_lag2
+| streamstats current=f window=3 last(total_received) as receivedBytes_lag3
 
-| eval latency_spike = if(delta_latency > stdev_latency, 1, 0)
-| eval error_spike = if(delta_error > stdev_error, 1, 0)
+| streamstats window=3 avg(avg_latency) as latency_moving_avg
+| streamstats window=3 avg(total_sent) as sent_moving_avg
+| streamstats window=3 avg(total_received) as received_moving_avg
 
-| eval severity_score = avg_latency * rolling_error_rate
+| eval latency_to_sent_ratio = avg_latency / (total_sent + 1)
+| eval received_to_sent_ratio = total_received / (total_sent + 1)
+| eval latency_change = avg_latency - serverResponseLatency_lag1
 
 | apply forecast_502_model
 
@@ -78,6 +83,7 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 | table forecast_time_est, verify_time_est, future_502, actual_http_status, result_type, 
         count_500, count_502, count_503, count_504,
         count_500_actual, count_502_actual, count_503_actual, count_504_actual,
-        avg_latency, rolling_avg_latency, delta_latency, rolling_error_rate, delta_error, latency_spike, error_spike, severity_score, total_5xx_errors, total_http_status, unique_clients
+        avg_latency, latency_moving_avg, latency_change, received_to_sent_ratio, latency_to_sent_ratio,
+        total_5xx_errors, total_http_status, unique_clients
 
 | sort forecast_time_est desc
