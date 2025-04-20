@@ -21,7 +21,6 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
 | streamstats current=f window=1 last(avg_latency) as serverResponseLatency_lag1
 | streamstats current=f window=2 last(avg_latency) as serverResponseLatency_lag2
 | streamstats current=f window=3 last(avg_latency) as serverResponseLatency_lag3
-| streamstats window=3 stdev(avg_latency) as latency_volatility
 
 | streamstats current=f window=1 last(total_sent) as sentBytes_lag1
 | streamstats current=f window=2 last(total_sent) as sentBytes_lag2
@@ -35,6 +34,9 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
 | streamstats window=3 avg(total_sent) as sent_moving_avg
 | streamstats window=3 avg(total_received) as received_moving_avg
 
+| streamstats window=3 stdev(avg_latency) as latency_volatility
+| streamstats window=3 stdev(total_sent) as sent_volatility
+
 | eval latency_to_sent_ratio = avg_latency / (total_sent + 1)
 | eval received_to_sent_ratio = total_received / (total_sent + 1)
 | eval latency_change = avg_latency - serverResponseLatency_lag1
@@ -44,54 +46,48 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
 
 | eval label = if(future_5m_has_502>=1 OR future_10m_has_502>=1, 1, 0)
 
-| fields _time serverResponseLatency_lag1 serverResponseLatency_lag2 serverResponseLatency_lag3 latency_volatility sentBytes_lag1 sentBytes_lag2 sentBytes_lag3 receivedBytes_lag1 receivedBytes_lag2 receivedBytes_lag3 latency_moving_avg sent_moving_avg received_moving_avg latency_to_sent_ratio received_to_sent_ratio latency_change label
+| fields _time serverResponseLatency_lag1 serverResponseLatency_lag2 serverResponseLatency_lag3 sentBytes_lag1 sentBytes_lag2 sentBytes_lag3 receivedBytes_lag1 receivedBytes_lag2 receivedBytes_lag3 latency_moving_avg latency_volatility sent_moving_avg sent_volatility received_moving_avg latency_to_sent_ratio received_to_sent_ratio latency_change label
 
 | fit RandomForestClassifier label from 
     serverResponseLatency_lag1 serverResponseLatency_lag2 serverResponseLatency_lag3
-    latency_volatility
     sentBytes_lag1 sentBytes_lag2 sentBytes_lag3
     receivedBytes_lag1 receivedBytes_lag2 receivedBytes_lag3
-    latency_moving_avg sent_moving_avg received_moving_avg
-    latency_to_sent_ratio received_to_sent_ratio latency_change
+    latency_moving_avg latency_volatility
+    sent_moving_avg sent_volatility
+    received_moving_avg
+    latency_to_sent_ratio received_to_sent_ratio
+    latency_change
     into forecast_502_classifier_model
 
 
 
 
 
-
-
-
-
 index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
-(same feature engineering as classifier above)
+(same feature engineering as above)
 
 | streamstats window=5 sum(count_502) as future_5m_502_count
 | streamstats window=10 sum(count_502) as future_10m_502_count
 
 | eval raw_label = future_5m_502_count + future_10m_502_count
-| eval label = log(raw_label + 1)  /* log1p transform for normalization */
+| eval label = log(raw_label + 1)  /* log1p transform */
 
-| fields _time serverResponseLatency_lag1 serverResponseLatency_lag2 serverResponseLatency_lag3 latency_volatility sentBytes_lag1 sentBytes_lag2 sentBytes_lag3 receivedBytes_lag1 receivedBytes_lag2 receivedBytes_lag3 latency_moving_avg sent_moving_avg received_moving_avg latency_to_sent_ratio received_to_sent_ratio latency_change label
+| fields _time serverResponseLatency_lag1 serverResponseLatency_lag2 serverResponseLatency_lag3 sentBytes_lag1 sentBytes_lag2 sentBytes_lag3 receivedBytes_lag1 receivedBytes_lag2 receivedBytes_lag3 latency_moving_avg latency_volatility sent_moving_avg sent_volatility received_moving_avg latency_to_sent_ratio received_to_sent_ratio latency_change label
 
 | fit GradientBoostingRegressor label from 
     serverResponseLatency_lag1 serverResponseLatency_lag2 serverResponseLatency_lag3
-    latency_volatility
     sentBytes_lag1 sentBytes_lag2 sentBytes_lag3
     receivedBytes_lag1 receivedBytes_lag2 receivedBytes_lag3
-    latency_moving_avg sent_moving_avg received_moving_avg
-    latency_to_sent_ratio received_to_sent_ratio latency_change
+    latency_moving_avg latency_volatility
+    sent_moving_avg sent_volatility
+    received_moving_avg
+    latency_to_sent_ratio received_to_sent_ratio
+    latency_change
+    options:
+      n_estimators=300
+      learning_rate=0.05
+      max_depth=5
     into forecast_502_regressor_model
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -120,7 +116,6 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 | streamstats current=f window=1 last(avg_latency) as serverResponseLatency_lag1
 | streamstats current=f window=2 last(avg_latency) as serverResponseLatency_lag2
 | streamstats current=f window=3 last(avg_latency) as serverResponseLatency_lag3
-| streamstats window=3 stdev(avg_latency) as latency_volatility
 
 | streamstats current=f window=1 last(total_sent) as sentBytes_lag1
 | streamstats current=f window=2 last(total_sent) as sentBytes_lag2
@@ -133,12 +128,15 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 | streamstats window=3 avg(avg_latency) as latency_moving_avg
 | streamstats window=3 avg(total_sent) as sent_moving_avg
 | streamstats window=3 avg(total_received) as received_moving_avg
+| streamstats window=3 stdev(avg_latency) as latency_volatility
+| streamstats window=3 stdev(total_sent) as sent_volatility
 
 | eval latency_to_sent_ratio = avg_latency / (total_sent + 1)
 | eval received_to_sent_ratio = total_received / (total_sent + 1)
 | eval latency_change = avg_latency - serverResponseLatency_lag1
 
 | apply forecast_502_classifier_model
+
 | eval future_502_risk = if('predicted(label)'=1, "DANGER", "SAFE")
 
 | where future_502_risk="DANGER"
@@ -147,7 +145,6 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 | rename "predicted(label)" as forecasted_log_502_count
 
 | eval forecasted_502_count = exp(forecasted_log_502_count) - 1
-| eval forecasted_502_count = round(forecasted_502_count, 0)
 | eval forecasted_502_count = if(forecasted_502_count<0, 0, forecasted_502_count)
 
 | eval forecast_time = _time
