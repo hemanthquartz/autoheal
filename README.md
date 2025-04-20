@@ -6,7 +6,6 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
 | spath path=body.timeStamp output=timeStamp
 | eval _time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
 | eval httpStatus = tonumber(httpStatus)
-
 | bin _time span=1m
 
 | stats 
@@ -58,16 +57,21 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
 
 
 index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
-(same features prep as classifier)
+(same feature engineering as above)
 
 | streamstats window=5 sum(count_502) as future_5m_502_count
 | streamstats window=10 sum(count_502) as future_10m_502_count
 
-| eval label = future_5m_502_count + future_10m_502_count
+| eval raw_label = future_5m_502_count + future_10m_502_count
+| eval label = case(
+    raw_label > 10, 10,   /* Cap max 10 */
+    raw_label < 0, 0,
+    true(), raw_label
+)
 
 | fields _time serverResponseLatency_lag1 serverResponseLatency_lag2 serverResponseLatency_lag3 sentBytes_lag1 sentBytes_lag2 sentBytes_lag3 receivedBytes_lag1 receivedBytes_lag2 receivedBytes_lag3 latency_moving_avg sent_moving_avg received_moving_avg latency_to_sent_ratio received_to_sent_ratio latency_change label
 
-| fit RandomForestRegressor label from 
+| fit GradientBoostingRegressor label from 
     serverResponseLatency_lag1 serverResponseLatency_lag2 serverResponseLatency_lag3
     sentBytes_lag1 sentBytes_lag2 sentBytes_lag3
     receivedBytes_lag1 receivedBytes_lag2 receivedBytes_lag3
@@ -149,4 +153,3 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 | table forecast_time_est, verify_time_est, future_502_risk, forecasted_502_count, actual_502_count
 
 | sort forecast_time_est desc
-
