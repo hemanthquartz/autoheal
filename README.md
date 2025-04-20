@@ -55,7 +55,6 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
 
 
 
-
 index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
 (same feature engineering as above)
 
@@ -63,11 +62,7 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
 | streamstats window=10 sum(count_502) as future_10m_502_count
 
 | eval raw_label = future_5m_502_count + future_10m_502_count
-| eval label = case(
-    raw_label > 10, 10,   /* Cap max 10 */
-    raw_label < 0, 0,
-    true(), raw_label
-)
+| eval label = log(raw_label + 1)  /* Use log1p transform */
 
 | fields _time serverResponseLatency_lag1 serverResponseLatency_lag2 serverResponseLatency_lag3 sentBytes_lag1 sentBytes_lag2 sentBytes_lag3 receivedBytes_lag1 receivedBytes_lag2 receivedBytes_lag3 latency_moving_avg sent_moving_avg received_moving_avg latency_to_sent_ratio received_to_sent_ratio latency_change label
 
@@ -90,7 +85,6 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 | spath path=body.timeStamp output=timeStamp
 | eval _time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
 | eval httpStatus = tonumber(httpStatus)
-
 | bin _time span=1m
 
 | stats 
@@ -130,7 +124,11 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 | where future_502_risk="DANGER"
 
 | apply forecast_502_regressor_model
-| rename "predicted(label)" as forecasted_502_count
+| rename "predicted(label)" as forecasted_log_502_count
+
+| eval forecasted_502_count = exp(forecasted_log_502_count) - 1
+| eval forecasted_502_count = round(forecasted_502_count, 0)
+| eval forecasted_502_count = if(forecasted_502_count<0, 0, forecasted_502_count)
 
 | eval forecast_time = _time
 | eval verify_time = _time + 300
@@ -152,4 +150,4 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 
 | table forecast_time_est, verify_time_est, future_502_risk, forecasted_502_count, actual_502_count
 
-| sort forecast_time_est desc
+| sort forecast_time desc
