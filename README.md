@@ -1,48 +1,83 @@
-| search index=your_index sourcetype=your_sourcetype earliest=-15m latest=now
+index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
+| spath path=body.properties.httpStatus output=httpStatus
+| spath path=body.properties.serverResponseLatency output=serverResponseLatency
+| spath path=body.properties.sentBytes output=sentBytes
+| spath path=body.properties.receivedBytes output=receivedBytes
+| spath path=body.timeStamp output=timeStamp
+
 | eval _time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
-| sort _time
-| fillnull value=0 serverResponseLatency sentBytes receivedBytes
+| eval httpStatus = tonumber(httpStatus)
 
-| streamstats current=f window=1 last(serverResponseLatency) as serverResponseLatency_lag1
-| streamstats current=f window=2 last(serverResponseLatency) as serverResponseLatency_lag2
-| streamstats current=f window=3 last(serverResponseLatency) as serverResponseLatency_lag3
+| bin _time span=1m
 
-| streamstats current=f window=1 last(sentBytes) as sentBytes_lag1
-| streamstats current=f window=2 last(sentBytes) as sentBytes_lag2
-| streamstats current=f window=3 last(sentBytes) as sentBytes_lag3
+| stats 
+    avg(serverResponseLatency) as avg_latency,
+    sum(sentBytes) as total_sent,
+    sum(receivedBytes) as total_received,
+    count as total_http_status,
+    count(eval(httpStatus>=500)) as total_5xx_errors,
+    count(eval(httpStatus=500)) as count_500,
+    count(eval(httpStatus=502)) as count_502,
+    count(eval(httpStatus=503)) as count_503,
+    count(eval(httpStatus=504)) as count_504,
+    dc(body.properties.clientIp) as unique_clients
+  by _time
 
-| streamstats current=f window=1 last(receivedBytes) as receivedBytes_lag1
-| streamstats current=f window=2 last(receivedBytes) as receivedBytes_lag2
-| streamstats current=f window=3 last(receivedBytes) as receivedBytes_lag3
+| sort 0 _time
 
-| streamstats window=3 avg(serverResponseLatency) as latency_moving_avg
-| streamstats window=3 avg(sentBytes) as sent_moving_avg
-| streamstats window=3 avg(receivedBytes) as received_moving_avg
+| streamstats window=5 avg(avg_latency) as rolling_avg_latency
+| streamstats window=5 avg(total_5xx_errors) as rolling_error_rate
 
-| eval latency_to_sent_ratio = serverResponseLatency / (sentBytes + 1)
-| eval received_to_sent_ratio = receivedBytes / (sentBytes + 1)
-| eval latency_change = serverResponseLatency - serverResponseLatency_lag1
+| delta avg_latency as delta_latency
+| delta rolling_error_rate as delta_error
+
+| eventstats stdev(avg_latency) as stdev_latency
+| eventstats stdev(rolling_error_rate) as stdev_error
+
+| eval latency_spike = if(delta_latency > stdev_latency, 1, 0)
+| eval error_spike = if(delta_error > stdev_error, 1, 0)
+
+| eval severity_score = avg_latency * rolling_error_rate
 
 | apply forecast_502_model
 
-| eval forecasted_code = if('predicted(label)'=1, 502, null())
-| eval forecast_time_utc = _time
-| eval forecast_time_est = strftime(_time - 18000, "%Y-%m-%d %H:%M:%S")   /* UTC - 5h = EST */
-| eval actual_time_utc = _time + 300
-| eval actual_time_est = strftime(actual_time_utc - 18000, "%Y-%m-%d %H:%M:%S")
+| eval future_502 = if('predicted(label)'=1, 1, 0)
 
-| fields forecast_time_est actual_time_est forecasted_code
-| where isnotnull(forecasted_code)
+| rename _time as forecast_time
+| eval forecast_time_est = strftime(forecast_time, "%Y-%m-%d %I:%M:%S %p EST")
+| eval verify_time = forecast_time + 300
 
-| append [
-    | search index=your_index sourcetype=your_sourcetype earliest=-10m latest=now
-    | eval actual_time_utc = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
-    | eval actual_time_est = strftime(actual_time_utc - 18000, "%Y-%m-%d %H:%M:%S")
-    | eval actual_httpStatus = if(httpStatus=502, 502, null())
-    | table actual_time_est actual_httpStatus
-]
+| join type=left verify_time
+    [
+      search index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-10m
+      | spath path=body.properties.httpStatus output=httpStatus
+      | spath path=body.timeStamp output=timeStamp
+      | eval verify_time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
+      | eval httpStatus = tonumber(httpStatus)
+      | where httpStatus=502
+      | bin verify_time span=1m
+      | stats 
+          values(httpStatus) as actual_http_status,
+          count(eval(httpStatus=500)) as count_500_actual,
+          count(eval(httpStatus=502)) as count_502_actual,
+          count(eval(httpStatus=503)) as count_503_actual,
+          count(eval(httpStatus=504)) as count_504_actual
+      by verify_time
+    ]
 
-| stats values(forecasted_code) as forecasted_code values(actual_httpStatus) as actual_httpStatus by actual_time_est
-| rename actual_time_est as actual_time
-| table forecast_time_est actual_time forecasted_code actual_httpStatus
-| sort forecast_time_est
+| eval verify_time_est = strftime(verify_time, "%Y-%m-%d %I:%M:%S %p EST")
+
+| eval result_type = case(
+    isnull(actual_http_status), null(),
+    future_502=1 AND isnotnull(actual_http_status), "True Positive",
+    future_502=1 AND isnull(actual_http_status), "False Positive",
+    future_502=0 AND isnotnull(actual_http_status), "Missed Forecast",
+    future_502=0 AND isnull(actual_http_status), "True Negative"
+)
+
+| table forecast_time_est, verify_time_est, future_502, actual_http_status, result_type, 
+        count_500, count_502, count_503, count_504,
+        count_500_actual, count_502_actual, count_503_actual, count_504_actual,
+        avg_latency, rolling_avg_latency, delta_latency, rolling_error_rate, delta_error, latency_spike, error_spike, severity_score, total_5xx_errors, total_http_status, unique_clients
+
+| sort forecast_time_est desc
