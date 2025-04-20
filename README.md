@@ -14,11 +14,7 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
     sum(sentBytes) as total_sent,
     sum(receivedBytes) as total_received,
     count as total_http_status,
-    count(eval(httpStatus>=500)) as total_5xx_errors,
-    count(eval(httpStatus=500)) as count_500,
-    count(eval(httpStatus=502)) as count_502,
-    count(eval(httpStatus=503)) as count_503,
-    count(eval(httpStatus=504)) as count_504,
+    count(eval(httpStatus=502)) as count_502,  /* Only 502 focus */
     dc(body.properties.clientIp) as unique_clients
   by _time
 
@@ -46,7 +42,7 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 
 | apply forecast_502_model
 
-| eval future_502 = if('predicted(label)'=1, 1, 0)
+| eval future_502 = if('predicted(label)'=1, 502, null())  /* Only predict 502 */
 
 | rename _time as forecast_time
 | eval forecast_time_est = strftime(forecast_time, "%Y-%m-%d %I:%M:%S %p EST")
@@ -59,14 +55,11 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
       | spath path=body.timeStamp output=timeStamp
       | eval verify_time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
       | eval httpStatus = tonumber(httpStatus)
-      | where httpStatus=502
+      | where httpStatus=502  /* Only actual 502s */
       | bin verify_time span=1m
       | stats 
           values(httpStatus) as actual_http_status,
-          count(eval(httpStatus=500)) as count_500_actual,
-          count(eval(httpStatus=502)) as count_502_actual,
-          count(eval(httpStatus=503)) as count_503_actual,
-          count(eval(httpStatus=504)) as count_504_actual
+          count as actual_502_count
       by verify_time
     ]
 
@@ -74,16 +67,16 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 
 | eval result_type = case(
     isnull(actual_http_status), null(),
-    future_502=1 AND isnotnull(actual_http_status), "True Positive",
-    future_502=1 AND isnull(actual_http_status), "False Positive",
-    future_502=0 AND isnotnull(actual_http_status), "Missed Forecast",
-    future_502=0 AND isnull(actual_http_status), "True Negative"
+    future_502=502 AND isnotnull(actual_http_status), "True Positive",
+    future_502=502 AND isnull(actual_http_status), "False Positive",
+    isnull(future_502) AND isnotnull(actual_http_status), "Missed Forecast",
+    isnull(future_502) AND isnull(actual_http_status), "True Negative"
 )
 
 | table forecast_time_est, verify_time_est, future_502, actual_http_status, result_type, 
-        count_500, count_502, count_503, count_504,
-        count_500_actual, count_502_actual, count_503_actual, count_504_actual,
-        avg_latency, latency_moving_avg, latency_change, received_to_sent_ratio, latency_to_sent_ratio,
-        total_5xx_errors, total_http_status, unique_clients
+        avg_latency, latency_moving_avg, latency_change,
+        sent_moving_avg, received_moving_avg,
+        latency_to_sent_ratio, received_to_sent_ratio,
+        total_sent, total_received, unique_clients, count_502, actual_502_count
 
 | sort forecast_time_est desc
