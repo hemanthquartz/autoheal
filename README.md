@@ -159,5 +159,28 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 | apply forecast_502_regressor_model
 | rename "predicted(regressor_label)" as forecasted_log_502_count
 
-| eval forecasted
+| eval forecasted_502_count = exp(forecasted_log_502_count) - 1
+| eval forecasted_502_count = round(forecasted_502_count, 0)
+| eval forecasted_502_count = if(forecasted_502_count<0, 0, forecasted_502_count)
 
+| eval forecast_time = _time
+| eval verify_time = _time + 300
+
+| join type=left verify_time
+    [
+      search index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-10m
+      | spath path=body.properties.httpStatus output=httpStatus
+      | spath path=body.timeStamp output=timeStamp
+      | eval verify_time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
+      | eval httpStatus = tonumber(httpStatus)
+      | where httpStatus=502
+      | bin verify_time span=1m
+      | stats count as actual_502_count by verify_time
+    ]
+
+| eval forecast_time_est = strftime(forecast_time, "%Y-%m-%d %I:%M:%S %p EST")
+| eval verify_time_est = strftime(verify_time, "%Y-%m-%d %I:%M:%S %p EST")
+
+| table forecast_time, forecast_time_est, verify_time_est, future_502_risk, forecasted_502_count, actual_502_count
+
+| sort - forecast_time
