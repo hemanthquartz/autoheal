@@ -1,4 +1,4 @@
-index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
+index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-24h
 | spath path=body.properties.httpStatus output=httpStatus
 | spath path=body.properties.serverResponseLatency output=serverResponseLatency
 | spath path=body.properties.sentBytes output=sentBytes
@@ -65,15 +65,15 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 
 | apply feature_scaler_model_v2
 
-| eval future_502_risk = if(error_velocity > 0 OR traffic_stress_index > 0.5, "DANGER", "SAFE")
-
-| where future_502_risk="DANGER"
-
 | apply forecast_502_regressor_model_v6
 | rename "predicted(label)" as forecasted_502_count
 
 | eval forecasted_502_count = round(forecasted_502_count, 0)
 | eval forecasted_502_count = if(forecasted_502_count < 0, 0, forecasted_502_count)
+
+| eval future_502_risk = if(forecasted_502_count > 0, "DANGER", "SAFE")
+
+| where future_502_risk="DANGER"
 
 | eval forecast_time = _time
 | eval verify_time = _time + 300
@@ -90,7 +90,6 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
       | stats count as actual_502_count by verify_time
     ]
 
-* Handle null values after join *
 | eval actual_502_count = coalesce(actual_502_count, 0)
 
 | streamstats window=10 avg(actual_502_count) as avg_actual_502
