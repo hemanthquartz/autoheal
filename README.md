@@ -18,33 +18,86 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
 
 | sort 0 _time
 
-| streamstats window=5 avg(avg_latency) as moving_avg_latency
-| streamstats window=5 stdev(avg_latency) as moving_latency_volatility
-| streamstats window=5 avg(total_sent) as moving_avg_sent
-| streamstats window=5 stdev(total_sent) as moving_sent_volatility
-| streamstats window=5 avg(total_received) as moving_avg_received
-| streamstats window=5 stdev(total_received) as moving_received_volatility
+| streamstats window=1 current=f last(avg_latency) as serverResponseLatency_lag1
+| streamstats window=2 current=f last(avg_latency) as serverResponseLatency_lag2
+| streamstats window=3 current=f last(avg_latency) as serverResponseLatency_lag3
 
-| eval latency_spike = if(avg_latency > (moving_avg_latency + 2 * moving_latency_volatility), 1, 0)
-| eval sent_drop = if(total_sent < (moving_avg_sent - 2 * moving_sent_volatility), 1, 0)
-| eval received_drop = if(total_received < (moving_avg_received - 2 * moving_received_volatility), 1, 0)
-| eval stress_score = latency_spike + sent_drop + received_drop
+| streamstats window=1 current=f last(total_sent) as sentBytes_lag1
+| streamstats window=2 current=f last(total_sent) as sentBytes_lag2
+| streamstats window=3 current=f last(total_sent) as sentBytes_lag3
 
-| streamstats window=5 sum(count_502) as future_5xx_errors
-| eval label = future_5xx_errors
+| streamstats window=1 current=f last(total_received) as receivedBytes_lag1
+| streamstats window=2 current=f last(total_received) as receivedBytes_lag2
+| streamstats window=3 current=f last(total_received) as receivedBytes_lag3
 
-| fields _time moving_avg_latency moving_latency_volatility moving_avg_sent moving_sent_volatility moving_avg_received moving_received_volatility latency_spike sent_drop received_drop stress_score label
+| streamstats window=3 avg(avg_latency) as latency_moving_avg
+| streamstats window=3 avg(total_sent) as sent_moving_avg
+| streamstats window=3 avg(total_received) as received_moving_avg
+
+| streamstats window=3 stdev(avg_latency) as latency_volatility
+| streamstats window=3 stdev(total_sent) as sent_volatility
+
+| eval latency_to_sent_ratio = avg_latency / (total_sent + 1)
+| eval received_to_sent_ratio = total_received / (total_sent + 1)
+| eval latency_change = avg_latency - serverResponseLatency_lag1
+
+| eventstats avg(latency_to_sent_ratio) as lsr_mean stdev(latency_to_sent_ratio) as lsr_std
+| eval latency_to_sent_ratio_z = (latency_to_sent_ratio - lsr_mean) / lsr_std
+
+| eventstats avg(received_to_sent_ratio) as rsr_mean stdev(received_to_sent_ratio) as rsr_std
+| eval received_to_sent_ratio_z = (received_to_sent_ratio - rsr_mean) / rsr_std
+
+| streamstats window=5 sum(count_502) as prev_502_sum
+| eval danger_score = (latency_volatility + 0.1) * (latency_to_sent_ratio_z + 0.1) * (prev_502_sum + 1)
+
+| streamstats window=5 max(count_502) as future_5m_has_502
+| streamstats window=10 max(count_502) as future_10m_has_502
+
+| eval label = if(future_5m_has_502>=1 OR future_10m_has_502>=1, 1, 0)
+
+| fields _time serverResponseLatency_lag1 serverResponseLatency_lag2 serverResponseLatency_lag3 sentBytes_lag1 sentBytes_lag2 sentBytes_lag3 receivedBytes_lag1 receivedBytes_lag2 receivedBytes_lag3 latency_moving_avg latency_volatility sent_moving_avg sent_volatility received_moving_avg latency_to_sent_ratio_z received_to_sent_ratio_z latency_change danger_score label
+
+| fit RandomForestClassifier label from 
+    serverResponseLatency_lag1 serverResponseLatency_lag2 serverResponseLatency_lag3
+    sentBytes_lag1 sentBytes_lag2 sentBytes_lag3
+    receivedBytes_lag1 receivedBytes_lag2 receivedBytes_lag3
+    latency_moving_avg latency_volatility
+    sent_moving_avg sent_volatility
+    received_moving_avg
+    latency_to_sent_ratio_z received_to_sent_ratio_z
+    latency_change danger_score
+    into forecast_502_classifier_model
+
+
+
+index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
+(same feature engineering as above)
+
+| streamstats window=5 sum(count_502) as future_5m_502_count
+| streamstats window=10 sum(count_502) as future_10m_502_count
+
+| eval raw_label = future_5m_502_count + future_10m_502_count
+
+| eventstats avg(raw_label) as label_mean stdev(raw_label) as label_std
+| eval label = (raw_label - label_mean) / label_std  /* Normalize label z-score */
+
+| fields _time serverResponseLatency_lag1 serverResponseLatency_lag2 serverResponseLatency_lag3 sentBytes_lag1 sentBytes_lag2 sentBytes_lag3 receivedBytes_lag1 receivedBytes_lag2 receivedBytes_lag3 latency_moving_avg latency_volatility sent_moving_avg sent_volatility received_moving_avg latency_to_sent_ratio_z received_to_sent_ratio_z latency_change danger_score label
 
 | fit GradientBoostingRegressor label from 
-    moving_avg_latency moving_latency_volatility 
-    moving_avg_sent moving_sent_volatility 
-    moving_avg_received moving_received_volatility 
-    latency_spike sent_drop received_drop stress_score
+    serverResponseLatency_lag1 serverResponseLatency_lag2 serverResponseLatency_lag3
+    sentBytes_lag1 sentBytes_lag2 sentBytes_lag3
+    receivedBytes_lag1 receivedBytes_lag2 receivedBytes_lag3
+    latency_moving_avg latency_volatility
+    sent_moving_avg sent_volatility
+    received_moving_avg
+    latency_to_sent_ratio_z received_to_sent_ratio_z
+    latency_change danger_score
     options:
       n_estimators=300
       learning_rate=0.05
       max_depth=5
     into forecast_502_regressor_model
+
 
 
 
@@ -70,21 +123,48 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 
 | sort 0 _time
 
-| streamstats window=5 avg(avg_latency) as moving_avg_latency
-| streamstats window=5 stdev(avg_latency) as moving_latency_volatility
-| streamstats window=5 avg(total_sent) as moving_avg_sent
-| streamstats window=5 stdev(total_sent) as moving_sent_volatility
-| streamstats window=5 avg(total_received) as moving_avg_received
-| streamstats window=5 stdev(total_received) as moving_received_volatility
+| streamstats window=1 current=f last(avg_latency) as serverResponseLatency_lag1
+| streamstats window=2 current=f last(avg_latency) as serverResponseLatency_lag2
+| streamstats window=3 current=f last(avg_latency) as serverResponseLatency_lag3
 
-| eval latency_spike = if(avg_latency > (moving_avg_latency + 2 * moving_latency_volatility), 1, 0)
-| eval sent_drop = if(total_sent < (moving_avg_sent - 2 * moving_sent_volatility), 1, 0)
-| eval received_drop = if(total_received < (moving_avg_received - 2 * moving_received_volatility), 1, 0)
-| eval stress_score = latency_spike + sent_drop + received_drop
+| streamstats window=1 current=f last(total_sent) as sentBytes_lag1
+| streamstats window=2 current=f last(total_sent) as sentBytes_lag2
+| streamstats window=3 current=f last(total_sent) as sentBytes_lag3
+
+| streamstats window=1 current=f last(total_received) as receivedBytes_lag1
+| streamstats window=2 current=f last(total_received) as receivedBytes_lag2
+| streamstats window=3 current=f last(total_received) as receivedBytes_lag3
+
+| streamstats window=3 avg(avg_latency) as latency_moving_avg
+| streamstats window=3 avg(total_sent) as sent_moving_avg
+| streamstats window=3 avg(total_received) as received_moving_avg
+| streamstats window=3 stdev(avg_latency) as latency_volatility
+| streamstats window=3 stdev(total_sent) as sent_volatility
+
+| eval latency_to_sent_ratio = avg_latency / (total_sent + 1)
+| eval received_to_sent_ratio = total_received / (total_sent + 1)
+| eval latency_change = avg_latency - serverResponseLatency_lag1
+
+| eventstats avg(latency_to_sent_ratio) as lsr_mean stdev(latency_to_sent_ratio) as lsr_std
+| eval latency_to_sent_ratio_z = (latency_to_sent_ratio - lsr_mean) / lsr_std
+
+| eventstats avg(received_to_sent_ratio) as rsr_mean stdev(received_to_sent_ratio) as rsr_std
+| eval received_to_sent_ratio_z = (received_to_sent_ratio - rsr_mean) / rsr_std
+
+| streamstats window=5 sum(count_502) as prev_502_sum
+| eval danger_score = (latency_volatility + 0.1) * (latency_to_sent_ratio_z + 0.1) * (prev_502_sum + 1)
+
+| apply forecast_502_classifier_model
+
+| eval future_502_risk = if('predicted(label)'=1, "DANGER", "SAFE")
+
+| where future_502_risk="DANGER"
 
 | apply forecast_502_regressor_model
-| rename "predicted(label)" as forecasted_502_count
+| rename "predicted(label)" as forecasted_zscore
 
+| eventstats avg(count_502) as label_mean stdev(count_502) as label_std
+| eval forecasted_502_count = (forecasted_zscore * label_std) + label_mean
 | eval forecasted_502_count = if(forecasted_502_count<0, 0, forecasted_502_count)
 
 | eval forecast_time = _time
@@ -106,6 +186,6 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 | eval forecast_time_est = strftime(forecast_time, "%Y-%m-%d %I:%M:%S %p EST")
 | eval verify_time_est = strftime(verify_time, "%Y-%m-%d %I:%M:%S %p EST")
 
-| table forecast_time_est, verify_time_est, forecasted_502_count, actual_502_count, is_future
+| table forecast_time_est, verify_time_est, future_502_risk, forecasted_502_count, actual_502_count, is_future
 
 | sort - is_future forecast_time desc
