@@ -32,10 +32,9 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
 | streamstats window=3 avg(total_sent) as sent_moving_avg
 | streamstats window=3 avg(total_received) as received_moving_avg
 
-| eval latency_spike = avg_latency - serverResponseLatency_lag1
-| eval latency_spike_ratio = latency_spike / (serverResponseLatency_lag1 + 1)
-| eval sent_bytes_drop = sentBytes_lag1 - sentBytes_lag2
-| eval received_bytes_drop = receivedBytes_lag1 - receivedBytes_lag2
+| eval latency_spike_ratio = (avg_latency - serverResponseLatency_lag1) / (serverResponseLatency_lag1 + 1)
+| eval sent_bytes_percent_change = (sentBytes_lag1 - sentBytes_lag2) / (sentBytes_lag2 + 1)
+| eval received_bytes_percent_change = (receivedBytes_lag1 - receivedBytes_lag2) / (receivedBytes_lag2 + 1)
 | eval latency_vs_sent_ratio = avg_latency / (total_sent + 1)
 | eval traffic_stability = abs(total_sent - total_received) / (total_sent + 1)
 
@@ -44,17 +43,13 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
 
 | eval label = if(future_5m_has_502>=1 OR future_10m_has_502>=1, 1, 0)
 
-| fields _time serverResponseLatency_lag1 serverResponseLatency_lag2 serverResponseLatency_lag3 sentBytes_lag1 sentBytes_lag2 sentBytes_lag3 receivedBytes_lag1 receivedBytes_lag2 receivedBytes_lag3 latency_moving_avg sent_moving_avg received_moving_avg latency_spike latency_spike_ratio sent_bytes_drop received_bytes_drop latency_vs_sent_ratio traffic_stability label
+| fields _time latency_spike_ratio sent_bytes_percent_change received_bytes_percent_change latency_vs_sent_ratio traffic_stability latency_moving_avg sent_moving_avg received_moving_avg label
 
 | fit RandomForestClassifier label from 
-    serverResponseLatency_lag1 serverResponseLatency_lag2 serverResponseLatency_lag3
-    sentBytes_lag1 sentBytes_lag2 sentBytes_lag3
-    receivedBytes_lag1 receivedBytes_lag2 receivedBytes_lag3
-    latency_moving_avg sent_moving_avg received_moving_avg
-    latency_spike latency_spike_ratio
-    sent_bytes_drop received_bytes_drop
+    latency_spike_ratio sent_bytes_percent_change received_bytes_percent_change
     latency_vs_sent_ratio traffic_stability
-    into forecast_502_classifier_model
+    latency_moving_avg sent_moving_avg received_moving_avg
+    into forecast_502_classifier_model_dynamic
 
 
 
@@ -70,21 +65,13 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
 | eval raw_label = future_5m_502_count + future_10m_502_count
 | eval label = log(raw_label + 1)
 
-| fields _time serverResponseLatency_lag1 serverResponseLatency_lag2 serverResponseLatency_lag3 sentBytes_lag1 sentBytes_lag2 sentBytes_lag3 receivedBytes_lag1 receivedBytes_lag2 receivedBytes_lag3 latency_moving_avg sent_moving_avg received_moving_avg latency_spike latency_spike_ratio sent_bytes_drop received_bytes_drop latency_vs_sent_ratio traffic_stability label
+| fields _time latency_spike_ratio sent_bytes_percent_change received_bytes_percent_change latency_vs_sent_ratio traffic_stability latency_moving_avg sent_moving_avg received_moving_avg label
 
 | fit GradientBoostingRegressor label from 
-    serverResponseLatency_lag1 serverResponseLatency_lag2 serverResponseLatency_lag3
-    sentBytes_lag1 sentBytes_lag2 sentBytes_lag3
-    receivedBytes_lag1 receivedBytes_lag2 receivedBytes_lag3
-    latency_moving_avg sent_moving_avg received_moving_avg
-    latency_spike latency_spike_ratio
-    sent_bytes_drop received_bytes_drop
+    latency_spike_ratio sent_bytes_percent_change received_bytes_percent_change
     latency_vs_sent_ratio traffic_stability
-    into forecast_502_regressor_model
-
-
-
-
+    latency_moving_avg sent_moving_avg received_moving_avg
+    into forecast_502_regressor_model_dynamic
 
 
 
@@ -123,20 +110,19 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 | streamstats window=3 avg(total_sent) as sent_moving_avg
 | streamstats window=3 avg(total_received) as received_moving_avg
 
-| eval latency_spike = avg_latency - serverResponseLatency_lag1
-| eval latency_spike_ratio = latency_spike / (serverResponseLatency_lag1 + 1)
-| eval sent_bytes_drop = sentBytes_lag1 - sentBytes_lag2
-| eval received_bytes_drop = receivedBytes_lag1 - receivedBytes_lag2
+| eval latency_spike_ratio = (avg_latency - serverResponseLatency_lag1) / (serverResponseLatency_lag1 + 1)
+| eval sent_bytes_percent_change = (sentBytes_lag1 - sentBytes_lag2) / (sentBytes_lag2 + 1)
+| eval received_bytes_percent_change = (receivedBytes_lag1 - receivedBytes_lag2) / (receivedBytes_lag2 + 1)
 | eval latency_vs_sent_ratio = avg_latency / (total_sent + 1)
 | eval traffic_stability = abs(total_sent - total_received) / (total_sent + 1)
 
-| apply forecast_502_classifier_model
+| apply forecast_502_classifier_model_dynamic
 
 | eval future_502_risk = if('predicted(label)'=1, "DANGER", "SAFE")
 
 | where future_502_risk="DANGER"
 
-| apply forecast_502_regressor_model
+| apply forecast_502_regressor_model_dynamic
 | rename "predicted(label)" as forecasted_log_502_count
 
 | eval forecasted_502_count = exp(forecasted_log_502_count) - 1
