@@ -1,141 +1,89 @@
 index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
 | spath path=body.properties.httpStatus output=httpStatus
-| spath path=body.properties.serverResponseLatency output=serverResponseLatency
+| spath path=body.properties.serverResponseLatency output=latency
 | spath path=body.properties.sentBytes output=sentBytes
 | spath path=body.properties.receivedBytes output=receivedBytes
 | spath path=body.timeStamp output=timeStamp
+
 | eval _time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
 | eval httpStatus = tonumber(httpStatus)
-| bin _time span=1m
-
-| stats 
-    avg(serverResponseLatency) as avg_latency,
-    sum(sentBytes) as total_sent,
-    sum(receivedBytes) as total_received,
-    count(eval(httpStatus=502)) as count_502,
-    dc(body.properties.clientIp) as unique_clients
-  by _time
-
 | sort 0 _time
 
-| streamstats current=f window=1 last(avg_latency) as serverResponseLatency_lag1
-| streamstats current=f window=2 last(avg_latency) as serverResponseLatency_lag2
-| streamstats current=f window=3 last(avg_latency) as serverResponseLatency_lag3
+| streamstats current=f window=1 last(latency) as latency_lag1
+| streamstats current=f window=1 last(sentBytes) as sentBytes_lag1
+| streamstats current=f window=1 last(receivedBytes) as receivedBytes_lag1
 
-| streamstats current=f window=1 last(total_sent) as sentBytes_lag1
-| streamstats current=f window=2 last(total_sent) as sentBytes_lag2
-| streamstats current=f window=3 last(total_sent) as sentBytes_lag3
+| eval delta_latency = latency - latency_lag1
+| eval delta_sent = sentBytes - sentBytes_lag1
+| eval delta_received = receivedBytes - receivedBytes_lag1
 
-| streamstats current=f window=1 last(total_received) as receivedBytes_lag1
-| streamstats current=f window=2 last(total_received) as receivedBytes_lag2
-| streamstats current=f window=3 last(total_received) as receivedBytes_lag3
+| streamstats window=5 avg(latency) as rolling_avg_latency
+| streamstats window=5 avg(sentBytes) as rolling_avg_sent
+| streamstats window=5 avg(receivedBytes) as rolling_avg_received
 
-| streamstats window=3 avg(avg_latency) as latency_moving_avg
-| streamstats window=3 avg(total_sent) as sent_moving_avg
-| streamstats window=3 avg(total_received) as received_moving_avg
+| eval latency_to_sent_ratio = latency / (sentBytes + 1)
+| eval received_to_sent_ratio = receivedBytes / (sentBytes + 1)
 
-| eval latency_to_sent_ratio = avg_latency / (total_sent + 1)
-| eval received_to_sent_ratio = total_received / (total_sent + 1)
-| eval latency_change = avg_latency - serverResponseLatency_lag1
-| eval sent_change = total_sent - sentBytes_lag1
-| eval received_change = total_received - receivedBytes_lag1
+| streamstats window=5 sum(eval(latency > rolling_avg_latency * 1.5)) as recent_latency_spikes
+| streamstats window=5 sum(eval(sentBytes < rolling_avg_sent * 0.8)) as recent_sent_drops
 
-| streamstats window=5 max(count_502) as future_5m_has_502
-| streamstats window=10 max(count_502) as future_10m_has_502
+| eval is_502 = if(httpStatus=502, 1, 0)
 
-| eval label = if(future_5m_has_502>=1 OR future_10m_has_502>=1, 1, 0)
+| streamstats window=20 max(is_502) as future_20events_has_502
+| streamstats window=20 sum(is_502) as future_20events_502_count
 
-| fields _time serverResponseLatency_lag1 serverResponseLatency_lag2 serverResponseLatency_lag3 sentBytes_lag1 sentBytes_lag2 sentBytes_lag3 receivedBytes_lag1 receivedBytes_lag2 receivedBytes_lag3 latency_moving_avg sent_moving_avg received_moving_avg latency_to_sent_ratio received_to_sent_ratio latency_change sent_change received_change label
+| eval label_classifier = if(future_20events_has_502>=1, 1, 0)
+| eval raw_label_regressor = future_20events_502_count
+| eval label_regressor = log(raw_label_regressor + 1)
 
-| fit RandomForestClassifier label from 
-    serverResponseLatency_lag1 serverResponseLatency_lag2 serverResponseLatency_lag3
-    sentBytes_lag1 sentBytes_lag2 sentBytes_lag3
-    receivedBytes_lag1 receivedBytes_lag2 receivedBytes_lag3
-    latency_moving_avg sent_moving_avg received_moving_avg
-    latency_to_sent_ratio received_to_sent_ratio
-    latency_change sent_change received_change
-    into forecast_502_classifier_model
+| fields _time latency sentBytes receivedBytes delta_latency delta_sent delta_received rolling_avg_latency rolling_avg_sent rolling_avg_received latency_to_sent_ratio received_to_sent_ratio recent_latency_spikes recent_sent_drops label_classifier label_regressor
 
+| fit RandomForestClassifier label_classifier from 
+    latency sentBytes receivedBytes delta_latency delta_sent delta_received rolling_avg_latency rolling_avg_sent rolling_avg_received latency_to_sent_ratio received_to_sent_ratio recent_latency_spikes recent_sent_drops
+    into forecast_502_classifier_event_model
 
-
-
-index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
-(same feature engineering as above)
-
-| streamstats window=5 sum(count_502) as future_5m_502_count
-| streamstats window=10 sum(count_502) as future_10m_502_count
-
-| eval raw_label = future_5m_502_count + future_10m_502_count
-| eval label = log(raw_label + 1)  /* natural log scaling for stability */
-
-| fields _time serverResponseLatency_lag1 serverResponseLatency_lag2 serverResponseLatency_lag3 sentBytes_lag1 sentBytes_lag2 sentBytes_lag3 receivedBytes_lag1 receivedBytes_lag2 receivedBytes_lag3 latency_moving_avg sent_moving_avg received_moving_avg latency_to_sent_ratio received_to_sent_ratio latency_change sent_change received_change label
-
-| fit GradientBoostingRegressor label from 
-    serverResponseLatency_lag1 serverResponseLatency_lag2 serverResponseLatency_lag3
-    sentBytes_lag1 sentBytes_lag2 sentBytes_lag3
-    receivedBytes_lag1 receivedBytes_lag2 receivedBytes_lag3
-    latency_moving_avg sent_moving_avg received_moving_avg
-    latency_to_sent_ratio received_to_sent_ratio
-    latency_change sent_change received_change
-    into forecast_502_regressor_model
-
-
-
-
+| fit GradientBoostingRegressor label_regressor from 
+    latency sentBytes receivedBytes delta_latency delta_sent delta_received rolling_avg_latency rolling_avg_sent rolling_avg_received latency_to_sent_ratio received_to_sent_ratio recent_latency_spikes recent_sent_drops
+    into forecast_502_regressor_event_model
 
 
 
 index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 | spath path=body.properties.httpStatus output=httpStatus
-| spath path=body.properties.serverResponseLatency output=serverResponseLatency
+| spath path=body.properties.serverResponseLatency output=latency
 | spath path=body.properties.sentBytes output=sentBytes
 | spath path=body.properties.receivedBytes output=receivedBytes
 | spath path=body.timeStamp output=timeStamp
+
 | eval _time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
 | eval httpStatus = tonumber(httpStatus)
-
-| bin _time span=1m
-
-| stats 
-    avg(serverResponseLatency) as avg_latency,
-    sum(sentBytes) as total_sent,
-    sum(receivedBytes) as total_received,
-    count(eval(httpStatus=502)) as count_502,
-    dc(body.properties.clientIp) as unique_clients
-  by _time
-
 | sort 0 _time
 
-| streamstats current=f window=1 last(avg_latency) as serverResponseLatency_lag1
-| streamstats current=f window=2 last(avg_latency) as serverResponseLatency_lag2
-| streamstats current=f window=3 last(avg_latency) as serverResponseLatency_lag3
+| streamstats current=f window=1 last(latency) as latency_lag1
+| streamstats current=f window=1 last(sentBytes) as sentBytes_lag1
+| streamstats current=f window=1 last(receivedBytes) as receivedBytes_lag1
 
-| streamstats current=f window=1 last(total_sent) as sentBytes_lag1
-| streamstats current=f window=2 last(total_sent) as sentBytes_lag2
-| streamstats current=f window=3 last(total_sent) as sentBytes_lag3
+| eval delta_latency = latency - latency_lag1
+| eval delta_sent = sentBytes - sentBytes_lag1
+| eval delta_received = receivedBytes - receivedBytes_lag1
 
-| streamstats current=f window=1 last(total_received) as receivedBytes_lag1
-| streamstats current=f window=2 last(total_received) as receivedBytes_lag2
-| streamstats current=f window=3 last(total_received) as receivedBytes_lag3
+| streamstats window=5 avg(latency) as rolling_avg_latency
+| streamstats window=5 avg(sentBytes) as rolling_avg_sent
+| streamstats window=5 avg(receivedBytes) as rolling_avg_received
 
-| streamstats window=3 avg(avg_latency) as latency_moving_avg
-| streamstats window=3 avg(total_sent) as sent_moving_avg
-| streamstats window=3 avg(total_received) as received_moving_avg
+| eval latency_to_sent_ratio = latency / (sentBytes + 1)
+| eval received_to_sent_ratio = receivedBytes / (sentBytes + 1)
 
-| eval latency_to_sent_ratio = avg_latency / (total_sent + 1)
-| eval received_to_sent_ratio = total_received / (total_sent + 1)
-| eval latency_change = avg_latency - serverResponseLatency_lag1
-| eval sent_change = total_sent - sentBytes_lag1
-| eval received_change = total_received - receivedBytes_lag1
+| streamstats window=5 sum(eval(latency > rolling_avg_latency * 1.5)) as recent_latency_spikes
+| streamstats window=5 sum(eval(sentBytes < rolling_avg_sent * 0.8)) as recent_sent_drops
 
-| apply forecast_502_classifier_model
-
-| eval future_502_risk = if('predicted(label)'=1, "DANGER", "SAFE")
+| apply forecast_502_classifier_event_model
+| eval future_502_risk = if('predicted(label_classifier)'=1, "DANGER", "SAFE")
 
 | where future_502_risk="DANGER"
 
-| apply forecast_502_regressor_model
-| rename "predicted(label)" as forecasted_log_502_count
+| apply forecast_502_regressor_event_model
+| rename "predicted(label_regressor)" as forecasted_log_502_count
 | eval forecasted_502_count = exp(forecasted_log_502_count) - 1
 | eval forecasted_502_count = round(forecasted_502_count, 0)
 | eval forecasted_502_count = if(forecasted_502_count<0, 0, forecasted_502_count)
@@ -151,7 +99,6 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
       | eval verify_time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
       | eval httpStatus = tonumber(httpStatus)
       | where httpStatus=502
-      | bin verify_time span=1m
       | stats count as actual_502_count by verify_time
     ]
 
