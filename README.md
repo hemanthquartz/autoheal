@@ -65,11 +65,11 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
 | streamstats window=10 sum(count_502) as future_10m_502_count
 
 | eval raw_label = future_5m_502_count + future_10m_502_count
-| eval label = sqrt(raw_label)  * Use square root instead of log to preserve more variability *
+| eval label = sqrt(raw_label)
 | eval binary_label = if(raw_label > 0, 1, 0)
 
 * Oversample minority class for regression *
-| eval weight = if(raw_label > 0, 5, 1)  * Adjust weight based on imbalance ratio *
+| eval weight = if(raw_label > 0, 5, 1)
 | streamstats count as row_num
 | eval repeat_count = weight
 | mvexpand repeat_count
@@ -90,16 +90,21 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
     max_depth=7 learning_rate=0.1 n_estimators=300 min_samples_split=3
     into forecast_502_regressor_model_v4
 
+* Oversample minority class for classification *
+| eval weight = if(binary_label=1, 5, 1)
+| streamstats count as row_num
+| eval repeat_count = weight
+| mvexpand repeat_count
+| fields -weight, -row_num, -repeat_count
+
 | fit LogisticRegression binary_label from 
     latency_spike_ratio sent_bytes_percent_change received_bytes_percent_change
     request_spike_ratio latency_vs_sent_ratio traffic_stability latency_moving_avg 
     sent_moving_avg received_moving_avg error_velocity traffic_stress_index 
     error_rate error_5xx_rate error_503_rate latency_p95_ratio client_density 
     max_latency hour_of_day day_of_week
-    fit_intercept=true class_weight=balanced
+    fit_intercept=true
     into forecast_502_classifier_model_v4
-
-
 
 
 
@@ -176,12 +181,11 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 | apply forecast_502_regressor_model_v4
 | rename "predicted(label)" as forecasted_sqrt_502_count
 
-| eval forecasted_502_count = forecasted_sqrt_502_count * forecasted_sqrt_502_count  * Reverse sqrt transformation *
+| eval forecasted_502_count = forecasted_sqrt_502_count * forecasted_sqrt_502_count
 | eval forecasted_502_count = round(forecasted_502_count, 0)
 | eval forecasted_502_count = if(forecasted_502_count < 0, 0, forecasted_502_count)
 
-* Calibration step: Adjust based on historical error distribution *
-| eval calibration_factor = 1.2  * Adjust this based on historical mean(actual_502_count) / mean(forecasted_502_count) *
+| eval calibration_factor = 1.2
 | eval forecasted_502_count = round(forecasted_502_count * calibration_factor, 0)
 
 | eval forecast_time = _time
