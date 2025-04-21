@@ -70,6 +70,7 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
 
 
 
+
 index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
 (same feature engineering as above)
 
@@ -97,8 +98,6 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
       learning_rate=0.05
       max_depth=5
     into forecast_502_regressor_model
-
-
 
 
 
