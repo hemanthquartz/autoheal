@@ -63,8 +63,12 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
 | streamstats window=3 sum(is_502) as error_velocity
 | eval traffic_stress_index = (latency_spike_ratio + sent_bytes_percent_change + received_bytes_percent_change + error_rate) / 4
 
+* Reverse sort to calculate future counts *
+| sort 0 -_time
 | streamstats window=5 sum(count_502) as future_5m_502_count
 | streamstats window=10 sum(count_502) as future_10m_502_count
+* Restore original sort order *
+| sort 0 _time
 
 | eval raw_label = future_5m_502_count + future_10m_502_count
 | eval label = raw_label
