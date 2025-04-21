@@ -38,20 +38,24 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
 | eval latency_vs_sent_ratio = avg_latency / (total_sent + 1)
 | eval traffic_stability = abs(total_sent - total_received) / (total_sent + 1)
 
+| eval is_502 = if(httpStatus=502,1,0)
+| streamstats window=3 sum(is_502) as error_velocity
+
+| eval traffic_stress_index = (latency_spike_ratio + sent_bytes_percent_change + received_bytes_percent_change) / 3
+
 | streamstats window=5 max(count_502) as future_5m_has_502
 | streamstats window=10 max(count_502) as future_10m_has_502
 
 | eval label = if(future_5m_has_502>=1 OR future_10m_has_502>=1, 1, 0)
 
-| fields _time latency_spike_ratio sent_bytes_percent_change received_bytes_percent_change latency_vs_sent_ratio traffic_stability latency_moving_avg sent_moving_avg received_moving_avg label
+| fields _time latency_spike_ratio sent_bytes_percent_change received_bytes_percent_change latency_vs_sent_ratio traffic_stability latency_moving_avg sent_moving_avg received_moving_avg error_velocity traffic_stress_index label
 
 | fit RandomForestClassifier label from 
     latency_spike_ratio sent_bytes_percent_change received_bytes_percent_change
     latency_vs_sent_ratio traffic_stability
     latency_moving_avg sent_moving_avg received_moving_avg
-    into forecast_502_classifier_model_dynamic
-
-
+    error_velocity traffic_stress_index
+    into forecast_502_classifier_model_v2
 
 
 
@@ -65,13 +69,14 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
 | eval raw_label = future_5m_502_count + future_10m_502_count
 | eval label = log(raw_label + 1)
 
-| fields _time latency_spike_ratio sent_bytes_percent_change received_bytes_percent_change latency_vs_sent_ratio traffic_stability latency_moving_avg sent_moving_avg received_moving_avg label
+| fields _time latency_spike_ratio sent_bytes_percent_change received_bytes_percent_change latency_vs_sent_ratio traffic_stability latency_moving_avg sent_moving_avg received_moving_avg error_velocity traffic_stress_index label
 
 | fit GradientBoostingRegressor label from 
     latency_spike_ratio sent_bytes_percent_change received_bytes_percent_change
     latency_vs_sent_ratio traffic_stability
     latency_moving_avg sent_moving_avg received_moving_avg
-    into forecast_502_regressor_model_dynamic
+    error_velocity traffic_stress_index
+    into forecast_502_regressor_model_v2
 
 
 
@@ -116,13 +121,18 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 | eval latency_vs_sent_ratio = avg_latency / (total_sent + 1)
 | eval traffic_stability = abs(total_sent - total_received) / (total_sent + 1)
 
-| apply forecast_502_classifier_model_dynamic
+| eval is_502 = if(httpStatus=502,1,0)
+| streamstats window=3 sum(is_502) as error_velocity
+
+| eval traffic_stress_index = (latency_spike_ratio + sent_bytes_percent_change + received_bytes_percent_change) / 3
+
+| apply forecast_502_classifier_model_v2
 
 | eval future_502_risk = if('predicted(label)'=1, "DANGER", "SAFE")
 
 | where future_502_risk="DANGER"
 
-| apply forecast_502_regressor_model_dynamic
+| apply forecast_502_regressor_model_v2
 | rename "predicted(label)" as forecasted_log_502_count
 
 | eval forecasted_502_count = exp(forecasted_log_502_count) - 1
