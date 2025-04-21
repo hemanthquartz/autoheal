@@ -9,42 +9,55 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
 | eval httpStatus = tonumber(httpStatus)
 | sort 0 _time
 
-| streamstats current=f window=1 last(latency) as latency_lag1
-| streamstats current=f window=1 last(sentBytes) as sentBytes_lag1
-| streamstats current=f window=1 last(receivedBytes) as receivedBytes_lag1
+| streamstats count as event_number
+| eval event_group = floor(event_number/5)   /* Every 5 events in same group */
 
-| eval delta_latency = latency - latency_lag1
-| eval delta_sent = sentBytes - sentBytes_lag1
-| eval delta_received = receivedBytes - receivedBytes_lag1
+| stats 
+    avg(latency) as avg_latency,
+    avg(sentBytes) as avg_sentBytes,
+    avg(receivedBytes) as avg_receivedBytes,
+    max(latency) as max_latency,
+    min(latency) as min_latency,
+    count(eval(httpStatus=502)) as count_502_in_group,
+    dc(body.properties.clientIp) as unique_clients
+  by event_group
 
-| streamstats window=5 avg(latency) as rolling_avg_latency
-| streamstats window=5 avg(sentBytes) as rolling_avg_sent
-| streamstats window=5 avg(receivedBytes) as rolling_avg_received
+| sort 0 event_group
 
-| eval latency_to_sent_ratio = latency / (sentBytes + 1)
-| eval received_to_sent_ratio = receivedBytes / (sentBytes + 1)
+| streamstats current=f window=1 last(avg_latency) as avg_latency_lag1
+| streamstats current=f window=1 last(avg_sentBytes) as avg_sentBytes_lag1
+| streamstats current=f window=1 last(avg_receivedBytes) as avg_receivedBytes_lag1
 
-| streamstats window=5 sum(eval(latency > rolling_avg_latency * 1.5)) as recent_latency_spikes
-| streamstats window=5 sum(eval(sentBytes < rolling_avg_sent * 0.8)) as recent_sent_drops
+| eval delta_avg_latency = avg_latency - avg_latency_lag1
+| eval delta_avg_sent = avg_sentBytes - avg_sentBytes_lag1
+| eval delta_avg_received = avg_receivedBytes - avg_receivedBytes_lag1
 
-| eval is_502 = if(httpStatus=502, 1, 0)
+| streamstats window=3 avg(avg_latency) as rolling_latency_avg
+| streamstats window=3 avg(avg_sentBytes) as rolling_sent_avg
+| streamstats window=3 avg(avg_receivedBytes) as rolling_received_avg
 
-| streamstats window=20 max(is_502) as future_20events_has_502
-| streamstats window=20 sum(is_502) as future_20events_502_count
+| eval latency_to_sent_ratio = avg_latency / (avg_sentBytes + 1)
+| eval received_to_sent_ratio = avg_receivedBytes / (avg_sentBytes + 1)
 
-| eval label_classifier = if(future_20events_has_502>=1, 1, 0)
-| eval raw_label_regressor = future_20events_502_count
+| streamstats window=5 sum(count_502_in_group) as future_5groups_502_count
+| streamstats window=5 max(count_502_in_group) as future_5groups_has_502
+
+| eval label_classifier = if(future_5groups_has_502>=1, 1, 0)
+| eval raw_label_regressor = future_5groups_502_count
 | eval label_regressor = log(raw_label_regressor + 1)
 
-| fields _time latency sentBytes receivedBytes delta_latency delta_sent delta_received rolling_avg_latency rolling_avg_sent rolling_avg_received latency_to_sent_ratio received_to_sent_ratio recent_latency_spikes recent_sent_drops label_classifier label_regressor
+| fields event_group avg_latency avg_sentBytes avg_receivedBytes max_latency min_latency delta_avg_latency delta_avg_sent delta_avg_received rolling_latency_avg rolling_sent_avg rolling_received_avg latency_to_sent_ratio received_to_sent_ratio label_classifier label_regressor
 
 | fit RandomForestClassifier label_classifier from 
-    latency sentBytes receivedBytes delta_latency delta_sent delta_received rolling_avg_latency rolling_avg_sent rolling_avg_received latency_to_sent_ratio received_to_sent_ratio recent_latency_spikes recent_sent_drops
-    into forecast_502_classifier_event_model
+    avg_latency avg_sentBytes avg_receivedBytes max_latency min_latency delta_avg_latency delta_avg_sent delta_avg_received rolling_latency_avg rolling_sent_avg rolling_received_avg latency_to_sent_ratio received_to_sent_ratio
+    into forecast_502_classifier_5event_model
 
 | fit GradientBoostingRegressor label_regressor from 
-    latency sentBytes receivedBytes delta_latency delta_sent delta_received rolling_avg_latency rolling_avg_sent rolling_avg_received latency_to_sent_ratio received_to_sent_ratio recent_latency_spikes recent_sent_drops
-    into forecast_502_regressor_event_model
+    avg_latency avg_sentBytes avg_receivedBytes max_latency min_latency delta_avg_latency delta_avg_sent delta_avg_received rolling_latency_avg rolling_sent_avg rolling_received_avg latency_to_sent_ratio received_to_sent_ratio
+    into forecast_502_regressor_5event_model
+
+
+
 
 
 
@@ -59,37 +72,49 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 | eval httpStatus = tonumber(httpStatus)
 | sort 0 _time
 
-| streamstats current=f window=1 last(latency) as latency_lag1
-| streamstats current=f window=1 last(sentBytes) as sentBytes_lag1
-| streamstats current=f window=1 last(receivedBytes) as receivedBytes_lag1
+| streamstats count as event_number
+| eval event_group = floor(event_number/5)
 
-| eval delta_latency = latency - latency_lag1
-| eval delta_sent = sentBytes - sentBytes_lag1
-| eval delta_received = receivedBytes - receivedBytes_lag1
+| stats 
+    avg(latency) as avg_latency,
+    avg(sentBytes) as avg_sentBytes,
+    avg(receivedBytes) as avg_receivedBytes,
+    max(latency) as max_latency,
+    min(latency) as min_latency,
+    count(eval(httpStatus=502)) as count_502_in_group,
+    dc(body.properties.clientIp) as unique_clients
+  by event_group
 
-| streamstats window=5 avg(latency) as rolling_avg_latency
-| streamstats window=5 avg(sentBytes) as rolling_avg_sent
-| streamstats window=5 avg(receivedBytes) as rolling_avg_received
+| sort 0 event_group
 
-| eval latency_to_sent_ratio = latency / (sentBytes + 1)
-| eval received_to_sent_ratio = receivedBytes / (sentBytes + 1)
+| streamstats current=f window=1 last(avg_latency) as avg_latency_lag1
+| streamstats current=f window=1 last(avg_sentBytes) as avg_sentBytes_lag1
+| streamstats current=f window=1 last(avg_receivedBytes) as avg_receivedBytes_lag1
 
-| streamstats window=5 sum(eval(latency > rolling_avg_latency * 1.5)) as recent_latency_spikes
-| streamstats window=5 sum(eval(sentBytes < rolling_avg_sent * 0.8)) as recent_sent_drops
+| eval delta_avg_latency = avg_latency - avg_latency_lag1
+| eval delta_avg_sent = avg_sentBytes - avg_sentBytes_lag1
+| eval delta_avg_received = avg_receivedBytes - avg_receivedBytes_lag1
 
-| apply forecast_502_classifier_event_model
+| streamstats window=3 avg(avg_latency) as rolling_latency_avg
+| streamstats window=3 avg(avg_sentBytes) as rolling_sent_avg
+| streamstats window=3 avg(avg_receivedBytes) as rolling_received_avg
+
+| eval latency_to_sent_ratio = avg_latency / (avg_sentBytes + 1)
+| eval received_to_sent_ratio = avg_receivedBytes / (avg_sentBytes + 1)
+
+| apply forecast_502_classifier_5event_model
 | eval future_502_risk = if('predicted(label_classifier)'=1, "DANGER", "SAFE")
 
 | where future_502_risk="DANGER"
 
-| apply forecast_502_regressor_event_model
+| apply forecast_502_regressor_5event_model
 | rename "predicted(label_regressor)" as forecasted_log_502_count
 | eval forecasted_502_count = exp(forecasted_log_502_count) - 1
 | eval forecasted_502_count = round(forecasted_502_count, 0)
 | eval forecasted_502_count = if(forecasted_502_count<0, 0, forecasted_502_count)
 
-| eval forecast_time = _time
-| eval verify_time = _time + 300
+| eval forecast_time = now()
+| eval verify_time = now() + 300
 
 | join type=left verify_time
     [
@@ -108,5 +133,4 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 | table forecast_time_est, verify_time_est, future_502_risk, forecasted_502_count, actual_502_count
 
 | sort forecast_time desc
-
 
