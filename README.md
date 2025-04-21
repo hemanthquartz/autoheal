@@ -1,4 +1,4 @@
-index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-7d
+index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-24h
 | spath path=body.properties.httpStatus output=httpStatus
 | spath path=body.properties.serverResponseLatency output=serverResponseLatency
 | spath path=body.properties.sentBytes output=sentBytes
@@ -63,24 +63,20 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-7d
 | streamstats window=3 sum(is_502) as error_velocity
 | eval traffic_stress_index = (latency_spike_ratio + sent_bytes_percent_change + received_bytes_percent_change + error_rate) / 4
 
-* Reverse sort to calculate future counts *
 | sort 0 -_time
 | streamstats window=5 sum(count_502) as future_5m_502_count
 | streamstats window=10 sum(count_502) as future_10m_502_count
-* Restore original sort order *
 | sort 0 _time
 
 | eval raw_label = future_5m_502_count + future_10m_502_count
-* Cap the label to reduce impact of outliers *
 | eval label = if(raw_label > 20, 20, raw_label)
 | eval binary_label = if(raw_label > 0, 1, 0)
 
-* Normalize features to handle data drift *
 | fit StandardScaler latency_spike_ratio sent_bytes_percent_change sent_bytes_trend received_bytes_percent_change
     received_bytes_trend latency_vs_sent_ratio traffic_stability latency_moving_avg sent_moving_avg 
     received_moving_avg error_velocity traffic_stress_index error_rate error_trend 
     latency_p95_ratio client_density max_latency
-    into feature_scaler_model
+    into feature_scaler_model_v2
 
 | fields _time latency_spike_ratio sent_bytes_percent_change sent_bytes_trend received_bytes_percent_change 
          received_bytes_trend latency_vs_sent_ratio traffic_stability latency_moving_avg 
@@ -93,7 +89,7 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-7d
     received_moving_avg error_velocity traffic_stress_index error_rate error_trend 
     latency_p95_ratio client_density max_latency is_peak_hour
     max_depth=3 learning_rate=0.05 n_estimators=150 min_samples_split=10
-    into forecast_502_regressor_model_v5
+    into forecast_502_regressor_model_v6
 
 | fit LogisticRegression binary_label from 
     latency_spike_ratio sent_bytes_percent_change sent_bytes_trend received_bytes_percent_change
@@ -101,7 +97,8 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-7d
     received_moving_avg error_velocity traffic_stress_index error_rate error_trend 
     latency_p95_ratio client_density max_latency is_peak_hour
     fit_intercept=true
-    into forecast_502_classifier_model_v5
+    into forecast_502_classifier_model_v6
+
 
 
 
@@ -173,21 +170,23 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 | streamstats window=3 sum(is_502) as error_velocity
 | eval traffic_stress_index = (latency_spike_ratio + sent_bytes_percent_change + received_bytes_percent_change + error_rate) / 4
 
-* Apply feature normalization *
-| apply feature_scaler_model
+| apply feature_scaler_model_v2
 
-| apply forecast_502_classifier_model_v5
-| eval future_502_risk = if('predicted(binary_label)' >= 0.3, "DANGER", "SAFE")
+* Use rule-based approach for risk if classifier fails *
+| eval future_502_risk = if(error_velocity > 0 OR traffic_stress_index > 0.5, "DANGER", "SAFE")
+
+* Optionally, use the classifier if training succeeds *
+*| apply forecast_502_classifier_model_v6
+| eval future_502_risk = if('predicted(binary_label)' >= 0.3, "DANGER", "SAFE")*
 
 | where future_502_risk="DANGER"
 
-| apply forecast_502_regressor_model_v5
+| apply forecast_502_regressor_model_v6
 | rename "predicted(label)" as forecasted_502_count
 
 | eval forecasted_502_count = round(forecasted_502_count, 0)
 | eval forecasted_502_count = if(forecasted_502_count < 0, 0, forecasted_502_count)
 
-* Dynamic correction factor based on recent data *
 | eval forecast_time = _time
 | eval verify_time = _time + 300
 
@@ -203,7 +202,6 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
       | stats count as actual_502_count by verify_time
     ]
 
-* Calculate dynamic correction factor *
 | streamstats window=10 avg(actual_502_count) as avg_actual_502
 | streamstats window=10 avg(forecasted_502_count) as avg_forecasted_502
 | eval correction_factor = avg_actual_502 / (avg_forecasted_502 + 1)
