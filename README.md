@@ -114,26 +114,26 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-20m
 
 | eval future_502_risk = if('predicted(label)'=1, "DANGER", "SAFE")
 
-| eval forecast_time = _time
-| eval verify_time = _time + 300
+| eval future_time = _time
+| eval actual_time = _time + 300
 
-| join type=left verify_time
+| join type=left actual_time
     [
       search index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-10m
       | spath path=body.properties.httpStatus output=httpStatus
       | spath path=body.timeStamp output=timeStamp
-      | eval verify_time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
+      | eval actual_time = strptime(timeStamp, "%Y-%m-%dT%H:%M:%S")
       | eval httpStatus = tonumber(httpStatus)
       | where httpStatus=502
-      | bin verify_time span=1m
-      | stats count as actual_502_count by verify_time
+      | bin actual_time span=1m
+      | stats count as actual_502_count by actual_time
     ]
 
-| eval forecast_time_est = strftime(forecast_time, "%Y-%m-%d %I:%M:%S %p EST")
-| eval verify_time_est = strftime(verify_time, "%Y-%m-%d %I:%M:%S %p EST")
+| eval forecast_time_est = strftime(future_time, "%Y-%m-%d %I:%M:%S %p EST")
+| eval actual_time_est = strftime(actual_time, "%Y-%m-%d %I:%M:%S %p EST")
 
-| eval actual_label = if(actual_502_count >=1, 1, 0)
+| eval forecasted_502_count = if(future_502_risk="DANGER", 1, 0)
 
-| table forecast_time_est, verify_time_est, future_502_risk, actual_502_count, actual_label
+| table forecast_time_est, actual_time_est, future_502_risk, forecasted_502_count, actual_502_count
 
-| sort forecast_time desc
+| sort forecast_time_est desc
