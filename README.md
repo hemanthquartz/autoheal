@@ -40,10 +40,10 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
 
 | eval label = if(future_5m_has_502>=1 OR future_10m_has_502>=1, 1, 0)
 
-| eval oversample = if(label=1, 5, 1)
-| eval dummy = mvindex(split(repeat("x,", oversample), ","), 0)
-| mvexpand dummy
-| fields - dummy
+| eval oversample = if(label=1, random() % 3, 0)  /* random oversampling */
+| streamstats count as dummy_counter
+| where dummy_counter <= oversample
+| fields - dummy_counter
 
 | eval latency_sent_diff = avg_latency - (total_sent/1000)
 | eval received_sent_ratio_change = received_to_sent_ratio - latency_to_sent_ratio
@@ -59,6 +59,9 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-1d
     latency_sent_diff received_sent_ratio_change latency_spike data_drop
     latency_change
     into forecast_502_classifier_model
+
+
+
 
 
 
