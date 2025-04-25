@@ -1,30 +1,28 @@
-index=<your_index> earliest=-1d@d latest=@d
-| timechart span=1m count(eval(httpStatus==502)) AS error_count
-| autoregress error_count p=1-5
-| reverse
-| autoregress error_count p=10
-| reverse
-| rename error_count_p10 AS error_count_future
-| where isnotnull(error_count_future) AND isnotnull(error_count_p5)
-| fit RandomForestRegressor error_count_future from error_count error_count_p1 error_count_p2 error_count_p3 error_count_p4 error_count_p5 n_estimators=200 into "RF_502_model"
-| fit StateSpaceForecast error_count into "SS_502_model"
-
-
-
-index=<your_index> earliest=-30m
-| timechart span=1m count(eval(httpStatus==502)) AS error_count
-| autoregress error_count p=1-5
-| reverse
-| autoregress error_count p=10
-| reverse
-| rename error_count_p10 AS actual_count
-| where isnotnull(actual_count) AND isnotnull(error_count_p5)
-| eval current_time = _time, forecast_time = _time + 600
-| apply RF_502_model
-| rename "predicted(error_count_future)" AS rf_forecast
-| apply SS_502_model
-| rename "predicted(error_count)" AS ss_forecast
-| eval forecasted_count = round((rf_forecast + ss_forecast)/2, 0)
-| eval current_time = strftime(current_time, "%Y-%m-%d %H:%M:%S %Z")
-| eval forecast_time = strftime(forecast_time, "%Y-%m-%d %H:%M:%S %Z")
-| table forecasted_count actual_count current_time forecast_time
+index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-60m
+| spath path=body.properties.clientIP output=clientIP
+| spath path=body.properties.clientPort output=clientPort
+| spath path=body.properties.contentType output=contentType
+| spath path=body.properties.error_info output=error_info
+| spath path=body.properties.host output=host
+| spath path=body.properties.httpMethod output=httpMethod
+| spath path=body.properties.httpVersion output=httpVersion
+| spath path=body.properties.instanceId output=instanceId
+| spath path=body.properties.originalHost output=originalHost
+| spath path=body.properties.originalRequestUriWithArgs output=originalRequestUriWithArgs
+| spath path=body.properties.requestUri output=requestUri
+| spath path=body.properties.serverResponseLatency output=serverResponseLatency
+| spath path=body.properties.timeTaken output=timeTaken
+| spath path=body.properties.userAgent output=userAgent
+| spath path=body.properties.WAFEvaluationTime output=WAFEvaluationTime
+| spath path=body.properties.WAFMode output=WAFMode
+| spath path=body.properties.httpStatus output=httpStatus
+| eval serverResponseLatency=tonumber(serverResponseLatency),
+        timeTaken=tonumber(timeTaken),
+        WAFEvaluationTime=tonumber(WAFEvaluationTime),
+        httpStatus=tonumber(httpStatus),
+        clientPort=tonumber(clientPort)
+| where isnotnull(clientIP) OR isnotnull(clientPort) OR isnotnull(contentType) OR isnotnull(error_info) OR isnotnull(host)
+    OR isnotnull(httpMethod) OR isnotnull(httpVersion) OR isnotnull(instanceId) OR isnotnull(originalHost)
+    OR isnotnull(originalRequestUriWithArgs) OR isnotnull(requestUri) OR isnotnull(serverResponseLatency)
+    OR isnotnull(timeTaken) OR isnotnull(userAgent) OR isnotnull(WAFEvaluationTime) OR isnotnull(WAFMode)
+| table _time httpStatus clientIP clientPort contentType error_info host httpMethod httpVersion instanceId originalHost originalRequestUriWithArgs requestUri serverResponseLatency timeTaken userAgent WAFEvaluationTime WAFMode
