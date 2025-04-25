@@ -16,11 +16,13 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-60m
 | spath path=body.properties.WAFEvaluationTime output=WAFEvaluationTime
 | spath path=body.properties.WAFMode output=WAFMode
 | spath path=body.properties.httpStatus output=httpStatus
+
 | eval clientPort=tonumber(clientPort),
         serverResponseLatency=tonumber(serverResponseLatency),
         timeTaken=tonumber(timeTaken),
         WAFEvaluationTime=tonumber(WAFEvaluationTime),
         httpStatus=tonumber(httpStatus)
+
 | where isnotnull(clientIP) AND isnotnull(clientPort) AND isnotnull(contentType) AND isnotnull(error_info)
     AND isnotnull(host) AND isnotnull(httpMethod) AND isnotnull(httpVersion)
     AND isnotnull(instanceId) AND isnotnull(originalHost)
@@ -28,19 +30,17 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-60m
     AND isnotnull(serverResponseLatency) AND isnotnull(timeTaken)
     AND isnotnull(userAgent) AND isnotnull(WAFEvaluationTime)
     AND isnotnull(WAFMode)
-    
-| eval httpMethod_num=case(httpMethod=="GET",1,httpMethod=="POST",2,httpMethod=="PUT",3,httpMethod=="DELETE",4,true(),0)
-| eval httpVersion_num=case(httpVersion=="HTTP/1.1",1,httpVersion=="HTTP/2",2,true(),0)
-| eval wafMode_num=case(WAFMode=="Prevention",1,WAFMode=="Detection",2,true(),0)
 
-| eval contentType_num=crc32(contentType),
-        error_info_num=crc32(error_info),
-        host_num=crc32(host),
-        instanceId_num=crc32(instanceId),
-        originalHost_num=crc32(originalHost),
-        requestUri_num=crc32(requestUri),
-        originalRequestUriWithArgs_num=crc32(originalRequestUriWithArgs),
-        userAgent_num=crc32(userAgent),
-        clientIP_num=crc32(clientIP)
+| foreach clientIP contentType error_info host httpMethod httpVersion instanceId originalHost requestUri originalRequestUriWithArgs userAgent WAFMode [
+    eval <<FIELD>>_combined=<<FIELD>>
+]
 
-| table _time httpStatus clientPort serverResponseLatency timeTaken WAFEvaluationTime httpMethod_num httpVersion_num wafMode_num contentType_num error_info_num host_num instanceId_num originalHost_num requestUri_num originalRequestUriWithArgs_num userAgent_num clientIP_num
+| stats values(*) as * by <<FIELD>>_combined
+
+| foreach clientIP_combined contentType_combined error_info_combined host_combined httpMethod_combined httpVersion_combined instanceId_combined originalHost_combined requestUri_combined originalRequestUriWithArgs_combined userAgent_combined WAFMode_combined [
+    eval <<FIELD>>_num = row_number()
+]
+
+| fields - *_combined
+
+| table _time httpStatus clientPort serverResponseLatency timeTaken WAFEvaluationTime clientIP_num contentType_num error_info_num host_num httpMethod_num httpVersion_num instanceId_num originalHost_num requestUri_num originalRequestUriWithArgs_num userAgent_num WAFMode_num
