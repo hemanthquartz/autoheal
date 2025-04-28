@@ -40,39 +40,41 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-60m
         requestUri_num=tonumber(substr(md5(requestUri),1,7),16),
         userAgent_num=tonumber(substr(md5(userAgent),1,7),16),
         WAFMode_num=tonumber(substr(md5(WAFMode),1,7),16)
-| fields _time httpStatus clientPort serverResponseLatency timeTaken WAFEvaluationTime clientIP_num contentType_num error_info_num host_num httpMethod_num httpVersion_num instanceId_num originalHost_num originalRequestUriWithArgs_num requestUri_num userAgent_num WAFMode_num
-| eventstats values(clientPort) as values_clientPort, values(serverResponseLatency) as values_serverResponseLatency, values(timeTaken) as values_timeTaken, values(WAFEvaluationTime) as values_WAFEvaluationTime, values(clientIP_num) as values_clientIP_num, values(contentType_num) as values_contentType_num, values(error_info_num) as values_error_info_num, values(host_num) as values_host_num, values(httpMethod_num) as values_httpMethod_num, values(httpVersion_num) as values_httpVersion_num, values(instanceId_num) as values_instanceId_num, values(originalHost_num) as values_originalHost_num, values(originalRequestUriWithArgs_num) as values_originalRequestUriWithArgs_num, values(requestUri_num) as values_requestUri_num, values(userAgent_num) as values_userAgent_num, values(WAFMode_num) as values_WAFMode_num
-| eval keep_clientPort=if(mvcount(values_clientPort)>1,1,0),
-       keep_serverResponseLatency=if(mvcount(values_serverResponseLatency)>1,1,0),
-       keep_timeTaken=if(mvcount(values_timeTaken)>1,1,0),
-       keep_WAFEvaluationTime=if(mvcount(values_WAFEvaluationTime)>1,1,0),
-       keep_clientIP_num=if(mvcount(values_clientIP_num)>1,1,0),
-       keep_contentType_num=if(mvcount(values_contentType_num)>1,1,0),
-       keep_error_info_num=if(mvcount(values_error_info_num)>1,1,0),
-       keep_host_num=if(mvcount(values_host_num)>1,1,0),
-       keep_httpMethod_num=if(mvcount(values_httpMethod_num)>1,1,0),
-       keep_httpVersion_num=if(mvcount(values_httpVersion_num)>1,1,0),
-       keep_instanceId_num=if(mvcount(values_instanceId_num)>1,1,0),
-       keep_originalHost_num=if(mvcount(values_originalHost_num)>1,1,0),
-       keep_originalRequestUriWithArgs_num=if(mvcount(values_originalRequestUriWithArgs_num)>1,1,0),
-       keep_requestUri_num=if(mvcount(values_requestUri_num)>1,1,0),
-       keep_userAgent_num=if(mvcount(values_userAgent_num)>1,1,0),
-       keep_WAFMode_num=if(mvcount(values_WAFMode_num)>1,1,0)
-| fields - values_*
-| eval clientPort=if(keep_clientPort==1,clientPort,null()),
-       serverResponseLatency=if(keep_serverResponseLatency==1,serverResponseLatency,null()),
-       timeTaken=if(keep_timeTaken==1,timeTaken,null()),
-       WAFEvaluationTime=if(keep_WAFEvaluationTime==1,WAFEvaluationTime,null()),
-       clientIP_num=if(keep_clientIP_num==1,clientIP_num,null()),
-       contentType_num=if(keep_contentType_num==1,contentType_num,null()),
-       error_info_num=if(keep_error_info_num==1,error_info_num,null()),
-       host_num=if(keep_host_num==1,host_num,null()),
-       httpMethod_num=if(keep_httpMethod_num==1,httpMethod_num,null()),
-       httpVersion_num=if(keep_httpVersion_num==1,httpVersion_num,null()),
-       instanceId_num=if(keep_instanceId_num==1,instanceId_num,null()),
-       originalHost_num=if(keep_originalHost_num==1,originalHost_num,null()),
-       originalRequestUriWithArgs_num=if(keep_originalRequestUriWithArgs_num==1,originalRequestUriWithArgs_num,null()),
-       requestUri_num=if(keep_requestUri_num==1,requestUri_num,null()),
-       userAgent_num=if(keep_userAgent_num==1,userAgent_num,null()),
-       WAFMode_num=if(keep_WAFMode_num==1,WAFMode_num,null())
-| fields - keep_*
+| table _time httpStatus clientPort serverResponseLatency timeTaken WAFEvaluationTime clientIP_num contentType_num error_info_num host_num httpMethod_num httpVersion_num instanceId_num originalHost_num originalRequestUriWithArgs_num requestUri_num userAgent_num WAFMode_num
+| eventstats values(clientPort) as clientPort_values, values(serverResponseLatency) as serverResponseLatency_values, values(timeTaken) as timeTaken_values, values(WAFEvaluationTime) as WAFEvaluationTime_values, values(clientIP_num) as clientIP_num_values, values(contentType_num) as contentType_num_values, values(error_info_num) as error_info_num_values, values(host_num) as host_num_values, values(httpMethod_num) as httpMethod_num_values, values(httpVersion_num) as httpVersion_num_values, values(instanceId_num) as instanceId_num_values, values(originalHost_num) as originalHost_num_values, values(originalRequestUriWithArgs_num) as originalRequestUriWithArgs_num_values, values(requestUri_num) as requestUri_num_values, values(userAgent_num) as userAgent_num_values, values(WAFMode_num) as WAFMode_num_values
+| eval clientPort_keep=if(mvcount(clientPort_values)>1,1,0),
+        serverResponseLatency_keep=if(mvcount(serverResponseLatency_values)>1,1,0),
+        timeTaken_keep=if(mvcount(timeTaken_values)>1,1,0),
+        WAFEvaluationTime_keep=if(mvcount(WAFEvaluationTime_values)>1,1,0),
+        clientIP_num_keep=if(mvcount(clientIP_num_values)>1,1,0),
+        contentType_num_keep=if(mvcount(contentType_num_values)>1,1,0),
+        error_info_num_keep=if(mvcount(error_info_num_values)>1,1,0),
+        host_num_keep=if(mvcount(host_num_values)>1,1,0),
+        httpMethod_num_keep=if(mvcount(httpMethod_num_values)>1,1,0),
+        httpVersion_num_keep=if(mvcount(httpVersion_num_values)>1,1,0),
+        instanceId_num_keep=if(mvcount(instanceId_num_values)>1,1,0),
+        originalHost_num_keep=if(mvcount(originalHost_num_values)>1,1,0),
+        originalRequestUriWithArgs_num_keep=if(mvcount(originalRequestUriWithArgs_num_values)>1,1,0),
+        requestUri_num_keep=if(mvcount(requestUri_num_values)>1,1,0),
+        userAgent_num_keep=if(mvcount(userAgent_num_values)>1,1,0),
+        WAFMode_num_keep=if(mvcount(WAFMode_num_values)>1,1,0)
+| fields - *_values
+| fields _time httpStatus 
+    clientPort serverResponseLatency timeTaken WAFEvaluationTime clientIP_num contentType_num error_info_num host_num httpMethod_num httpVersion_num instanceId_num originalHost_num originalRequestUriWithArgs_num requestUri_num userAgent_num WAFMode_num
+| eval clientPort=if(clientPort_keep=1,clientPort,null()),
+        serverResponseLatency=if(serverResponseLatency_keep=1,serverResponseLatency,null()),
+        timeTaken=if(timeTaken_keep=1,timeTaken,null()),
+        WAFEvaluationTime=if(WAFEvaluationTime_keep=1,WAFEvaluationTime,null()),
+        clientIP_num=if(clientIP_num_keep=1,clientIP_num,null()),
+        contentType_num=if(contentType_num_keep=1,contentType_num,null()),
+        error_info_num=if(error_info_num_keep=1,error_info_num,null()),
+        host_num=if(host_num_keep=1,host_num,null()),
+        httpMethod_num=if(httpMethod_num_keep=1,httpMethod_num,null()),
+        httpVersion_num=if(httpVersion_num_keep=1,httpVersion_num,null()),
+        instanceId_num=if(instanceId_num_keep=1,instanceId_num,null()),
+        originalHost_num=if(originalHost_num_keep=1,originalHost_num,null()),
+        originalRequestUriWithArgs_num=if(originalRequestUriWithArgs_num_keep=1,originalRequestUriWithArgs_num,null()),
+        requestUri_num=if(requestUri_num_keep=1,requestUri_num,null()),
+        userAgent_num=if(userAgent_num_keep=1,userAgent_num,null()),
+        WAFMode_num=if(WAFMode_num_keep=1,WAFMode_num,null())
+| fields - *_keep
