@@ -40,4 +40,27 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-60m
         requestUri_num=tonumber(substr(md5(requestUri),1,7),16),
         userAgent_num=tonumber(substr(md5(userAgent),1,7),16),
         WAFMode_num=tonumber(substr(md5(WAFMode),1,7),16)
-| table _time httpStatus clientPort serverResponseLatency timeTaken WAFEvaluationTime clientIP_num contentType_num error_info_num host_num httpMethod_num httpVersion_num instanceId_num originalHost_num originalRequestUriWithArgs_num requestUri_num userAgent_num WAFMode_num
+| fields _time httpStatus clientPort serverResponseLatency timeTaken WAFEvaluationTime clientIP_num contentType_num error_info_num host_num httpMethod_num httpVersion_num instanceId_num originalHost_num originalRequestUriWithArgs_num requestUri_num userAgent_num WAFMode_num
+| eventstats values(*) as values_*
+| eval drop_fields=mvappend(
+        if(mvcount(values_clientPort)==1,"clientPort",null()),
+        if(mvcount(values_serverResponseLatency)==1,"serverResponseLatency",null()),
+        if(mvcount(values_timeTaken)==1,"timeTaken",null()),
+        if(mvcount(values_WAFEvaluationTime)==1,"WAFEvaluationTime",null()),
+        if(mvcount(values_clientIP_num)==1,"clientIP_num",null()),
+        if(mvcount(values_contentType_num)==1,"contentType_num",null()),
+        if(mvcount(values_error_info_num)==1,"error_info_num",null()),
+        if(mvcount(values_host_num)==1,"host_num",null()),
+        if(mvcount(values_httpMethod_num)==1,"httpMethod_num",null()),
+        if(mvcount(values_httpVersion_num)==1,"httpVersion_num",null()),
+        if(mvcount(values_instanceId_num)==1,"instanceId_num",null()),
+        if(mvcount(values_originalHost_num)==1,"originalHost_num",null()),
+        if(mvcount(values_originalRequestUriWithArgs_num)==1,"originalRequestUriWithArgs_num",null()),
+        if(mvcount(values_requestUri_num)==1,"requestUri_num",null()),
+        if(mvcount(values_userAgent_num)==1,"userAgent_num",null()),
+        if(mvcount(values_WAFMode_num)==1,"WAFMode_num",null())
+    )
+| fields - values_*
+| foreach clientPort serverResponseLatency timeTaken WAFEvaluationTime clientIP_num contentType_num error_info_num host_num httpMethod_num httpVersion_num instanceId_num originalHost_num originalRequestUriWithArgs_num requestUri_num userAgent_num WAFMode_num
+    [ eval <<FIELD>>=if(match(drop_fields,"<<FIELD>>"),null(),<<FIELD>>) ]
+| fields - drop_fields
