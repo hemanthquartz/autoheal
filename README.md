@@ -41,26 +41,38 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-60m
         userAgent_num=tonumber(substr(md5(userAgent),1,7),16),
         WAFMode_num=tonumber(substr(md5(WAFMode),1,7),16)
 | fields _time httpStatus clientPort serverResponseLatency timeTaken WAFEvaluationTime clientIP_num contentType_num error_info_num host_num httpMethod_num httpVersion_num instanceId_num originalHost_num originalRequestUriWithArgs_num requestUri_num userAgent_num WAFMode_num
-| eventstats values(*) as values_*
-| eval drop_fields=mvappend(
-        if(mvcount(values_clientPort)==1,"clientPort",null()),
-        if(mvcount(values_serverResponseLatency)==1,"serverResponseLatency",null()),
-        if(mvcount(values_timeTaken)==1,"timeTaken",null()),
-        if(mvcount(values_WAFEvaluationTime)==1,"WAFEvaluationTime",null()),
-        if(mvcount(values_clientIP_num)==1,"clientIP_num",null()),
-        if(mvcount(values_contentType_num)==1,"contentType_num",null()),
-        if(mvcount(values_error_info_num)==1,"error_info_num",null()),
-        if(mvcount(values_host_num)==1,"host_num",null()),
-        if(mvcount(values_httpMethod_num)==1,"httpMethod_num",null()),
-        if(mvcount(values_httpVersion_num)==1,"httpVersion_num",null()),
-        if(mvcount(values_instanceId_num)==1,"instanceId_num",null()),
-        if(mvcount(values_originalHost_num)==1,"originalHost_num",null()),
-        if(mvcount(values_originalRequestUriWithArgs_num)==1,"originalRequestUriWithArgs_num",null()),
-        if(mvcount(values_requestUri_num)==1,"requestUri_num",null()),
-        if(mvcount(values_userAgent_num)==1,"userAgent_num",null()),
-        if(mvcount(values_WAFMode_num)==1,"WAFMode_num",null())
-    )
+| eventstats values(clientPort) as values_clientPort, values(serverResponseLatency) as values_serverResponseLatency, values(timeTaken) as values_timeTaken, values(WAFEvaluationTime) as values_WAFEvaluationTime, values(clientIP_num) as values_clientIP_num, values(contentType_num) as values_contentType_num, values(error_info_num) as values_error_info_num, values(host_num) as values_host_num, values(httpMethod_num) as values_httpMethod_num, values(httpVersion_num) as values_httpVersion_num, values(instanceId_num) as values_instanceId_num, values(originalHost_num) as values_originalHost_num, values(originalRequestUriWithArgs_num) as values_originalRequestUriWithArgs_num, values(requestUri_num) as values_requestUri_num, values(userAgent_num) as values_userAgent_num, values(WAFMode_num) as values_WAFMode_num
+| eval keep_clientPort=if(mvcount(values_clientPort)>1,1,0),
+       keep_serverResponseLatency=if(mvcount(values_serverResponseLatency)>1,1,0),
+       keep_timeTaken=if(mvcount(values_timeTaken)>1,1,0),
+       keep_WAFEvaluationTime=if(mvcount(values_WAFEvaluationTime)>1,1,0),
+       keep_clientIP_num=if(mvcount(values_clientIP_num)>1,1,0),
+       keep_contentType_num=if(mvcount(values_contentType_num)>1,1,0),
+       keep_error_info_num=if(mvcount(values_error_info_num)>1,1,0),
+       keep_host_num=if(mvcount(values_host_num)>1,1,0),
+       keep_httpMethod_num=if(mvcount(values_httpMethod_num)>1,1,0),
+       keep_httpVersion_num=if(mvcount(values_httpVersion_num)>1,1,0),
+       keep_instanceId_num=if(mvcount(values_instanceId_num)>1,1,0),
+       keep_originalHost_num=if(mvcount(values_originalHost_num)>1,1,0),
+       keep_originalRequestUriWithArgs_num=if(mvcount(values_originalRequestUriWithArgs_num)>1,1,0),
+       keep_requestUri_num=if(mvcount(values_requestUri_num)>1,1,0),
+       keep_userAgent_num=if(mvcount(values_userAgent_num)>1,1,0),
+       keep_WAFMode_num=if(mvcount(values_WAFMode_num)>1,1,0)
 | fields - values_*
-| foreach clientPort serverResponseLatency timeTaken WAFEvaluationTime clientIP_num contentType_num error_info_num host_num httpMethod_num httpVersion_num instanceId_num originalHost_num originalRequestUriWithArgs_num requestUri_num userAgent_num WAFMode_num
-    [ eval <<FIELD>>=if(match(drop_fields,"<<FIELD>>"),null(),<<FIELD>>) ]
-| fields - drop_fields
+| eval clientPort=if(keep_clientPort==1,clientPort,null()),
+       serverResponseLatency=if(keep_serverResponseLatency==1,serverResponseLatency,null()),
+       timeTaken=if(keep_timeTaken==1,timeTaken,null()),
+       WAFEvaluationTime=if(keep_WAFEvaluationTime==1,WAFEvaluationTime,null()),
+       clientIP_num=if(keep_clientIP_num==1,clientIP_num,null()),
+       contentType_num=if(keep_contentType_num==1,contentType_num,null()),
+       error_info_num=if(keep_error_info_num==1,error_info_num,null()),
+       host_num=if(keep_host_num==1,host_num,null()),
+       httpMethod_num=if(keep_httpMethod_num==1,httpMethod_num,null()),
+       httpVersion_num=if(keep_httpVersion_num==1,httpVersion_num,null()),
+       instanceId_num=if(keep_instanceId_num==1,instanceId_num,null()),
+       originalHost_num=if(keep_originalHost_num==1,originalHost_num,null()),
+       originalRequestUriWithArgs_num=if(keep_originalRequestUriWithArgs_num==1,originalRequestUriWithArgs_num,null()),
+       requestUri_num=if(keep_requestUri_num==1,requestUri_num,null()),
+       userAgent_num=if(keep_userAgent_num==1,userAgent_num,null()),
+       WAFMode_num=if(keep_WAFMode_num==1,WAFMode_num,null())
+| fields - keep_*
