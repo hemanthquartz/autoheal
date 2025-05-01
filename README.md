@@ -1,35 +1,30 @@
-name: Splunk Cloud Manager
+terraform {
+  required_providers {
+    splunk = {
+      source  = "splunk/splunk"
+      version = ">= 1.0.0"
+    }
+  }
+}
 
-on:
-  workflow_dispatch:
-    inputs:
-      action:
-        description: "Select an action to perform"
-        required: true
-        type: choice
-        options:
-          - list_indexes
-          - add_index
-          - add_role_mapping
-          - add_hec
-          - create_app
+provider "splunk" {
+  url      = var.splunk_url
+  username = var.splunk_username
+  password = var.splunk_password
+}
 
-jobs:
-  run_splunk_action:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
 
-      - name: Initialize Terraform Provider
-        run: |
-          cd terraform/common
-          terraform init
+variable "splunk_url" {}
+variable "splunk_username" {}
+variable "splunk_password" {}
 
-      - name: Execute Selected Action
-        run: |
-          chmod +x scripts/run_action.sh
-          ./scripts/run_action.sh ${{ github.event.inputs.action }}
+
+
+data "splunk_indexes" "all" {}
+
+output "indexes" {
+  value = data.splunk_indexes.all
+}
+
+
