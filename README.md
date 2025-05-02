@@ -1,30 +1,35 @@
-#!/bin/bash
-set -euo pipefail
+def wait_for_execution_to_run(stepfunction_arn, timeout=500, msgid=None, db_conn=None):
+    sf_client = boto3.client('stepfunctions')
+    start_time = time.time()
 
-echo "Listing Splunk Indexes using ACS API..."
+    while True:
+        try:
+            response = sf_client.list_executions(
+                stateMachineArn=stepfunction_arn,
+                statusFilter='RUNNING'
+            )
 
-if [[ -z "${SPLUNK_STACK:-}" ]]; then
-  echo "ERROR: SPLUNK_STACK not defined."
-  exit 1
-fi
+            print(response)
 
-if [[ -z "${SPLUNK_TOKEN:-}" ]]; then
-  echo "ERROR: SPLUNK_TOKEN (Bearer token) not defined."
-  exit 1
-fi
+            if response['executions']:
+                return response['executions'][0]['executionArn']
 
-for i in {1..3}; do
-  response=$(curl -s -H "Authorization: Bearer ${SPLUNK_TOKEN}" \
-    "https://admin.splunk.com/${SPLUNK_STACK}/adminconfig/v2/indexes" || true)
+            if time.time() - start_time > timeout:
+                # Before raising Exception, check in DB table tib_tran_logs
+                cursor = db_conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM tib_tran_logs WHERE messageid = %s", (msgid,))
+                result = cursor.fetchone()
+                cursor.close()
 
-  if echo "$response" | jq . >/dev/null 2>&1; then
-    echo "$response" | jq .
-    exit 0
-  else
-    echo "Attempt $i: Failed to retrieve indexes. Retrying..."
-    sleep 2
-  fi
-done
+                if result and result[0] > 0:
+                    # messageid exists, don't raise exception, return response
+                    return response
+                else:
+                    raise Exception("Timeout reached: Step function did not go into Running state")
 
-echo "ERROR: Could not retrieve indexes after multiple attempts."
-exit 1
+            else:
+                time.sleep(1)
+
+        except Exception as e:
+            logger.error("Error listing executions {}".format(repr(e)))
+            raise Exception("Error listing executions: {}".format(repr(e)))
