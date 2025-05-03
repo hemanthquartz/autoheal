@@ -1,35 +1,58 @@
-def wait_for_execution_to_run(stepfunction_arn, timeout=500, msgid=None, db_conn=None):
-    sf_client = boto3.client('stepfunctions')
-    start_time = time.time()
-
-    while True:
-        try:
-            response = sf_client.list_executions(
-                stateMachineArn=stepfunction_arn,
-                statusFilter='RUNNING'
-            )
-
-            print(response)
-
-            if response['executions']:
-                return response['executions'][0]['executionArn']
-
-            if time.time() - start_time > timeout:
-                # Before raising Exception, check in DB table tib_tran_logs
-                cursor = db_conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM tib_tran_logs WHERE messageid = %s", (msgid,))
-                result = cursor.fetchone()
-                cursor.close()
-
-                if result and result[0] > 0:
-                    # messageid exists, don't raise exception, return response
-                    return response
-                else:
-                    raise Exception("Timeout reached: Step function did not go into Running state")
-
-            else:
-                time.sleep(1)
-
-        except Exception as e:
-            logger.error("Error listing executions {}".format(repr(e)))
-            raise Exception("Error listing executions: {}".format(repr(e)))
+index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-60m
+| spath path=body.properties.httpStatus output=httpStatus
+| spath path=body.properties.clientIP output=clientIP
+| spath path=body.properties.clientPort output=clientPort
+| spath path=body.properties.contentType output=contentType
+| spath path=body.properties.error_info output=error_info
+| spath path=body.properties.host output=host
+| spath path=body.properties.httpMethod output=httpMethod
+| spath path=body.properties.httpVersion output=httpVersion
+| spath path=body.properties.instanceId output=instanceId
+| spath path=body.properties.originalHost output=originalHost
+| spath path=body.properties.originalRequestUriWithArgs output=originalRequestUriWithArgs
+| spath path=body.properties.requestUri output=requestUri
+| spath path=body.properties.serverResponseLatency output=serverResponseLatency
+| spath path=body.properties.timeTaken output=timeTaken
+| spath path=body.properties.userAgent output=userAgent
+| spath path=body.properties.WAFEvaluationTime output=WAFEvaluationTime
+| spath path=body.properties.WAFMode output=WAFMode
+| eval clientPort=tonumber(clientPort),
+        serverResponseLatency=tonumber(serverResponseLatency),
+        timeTaken=tonumber(timeTaken),
+        WAFEvaluationTime=tonumber(WAFEvaluationTime),
+        httpStatus=tonumber(httpStatus)
+| where isnotnull(clientIP) AND isnotnull(clientPort) AND isnotnull(contentType) AND isnotnull(error_info)
+    AND isnotnull(host) AND isnotnull(httpMethod) AND isnotnull(httpVersion)
+    AND isnotnull(instanceId) AND isnotnull(originalHost)
+    AND isnotnull(originalRequestUriWithArgs) AND isnotnull(requestUri)
+    AND isnotnull(serverResponseLatency) AND isnotnull(timeTaken)
+    AND isnotnull(userAgent) AND isnotnull(WAFEvaluationTime)
+    AND isnotnull(WAFMode)
+| eval replication_factor=case(
+    httpStatus=500,10,
+    httpStatus=502,20,
+    httpStatus=503,15,
+    httpStatus=504,10,
+    httpStatus=429,5,
+    httpStatus>=400 AND httpStatus<500,3,
+    true(),1)
+| eval repeat=mvjoin(mvrange(0, replication_factor), ",")
+| makemv delim="," repeat
+| mvexpand repeat
+| eval clientIP_num=tonumber(substr(md5(clientIP),1,7),16),
+        clientPort_num=clientPort,
+        contentType_num=tonumber(substr(md5(contentType),1,7),16),
+        error_info_num=tonumber(substr(md5(error_info),1,7),16),
+        host_num=tonumber(substr(md5(host),1,7),16),
+        httpMethod_num=tonumber(substr(md5(httpMethod),1,7),16),
+        httpVersion_num=tonumber(substr(md5(httpVersion),1,7),16),
+        instanceId_num=tonumber(substr(md5(instanceId),1,7),16),
+        originalHost_num=tonumber(substr(md5(originalHost),1,7),16),
+        originalRequestUriWithArgs_num=tonumber(substr(md5(originalRequestUriWithArgs),1,7),16),
+        requestUri_num=tonumber(substr(md5(requestUri),1,7),16),
+        serverResponseLatency_num=serverResponseLatency,
+        timeTaken_num=timeTaken,
+        userAgent_num=tonumber(substr(md5(userAgent),1,7),16),
+        WAFEvaluationTime_num=WAFEvaluationTime,
+        WAFMode_num=tonumber(substr(md5(WAFMode),1,7),16)
+| table _time httpStatus clientIP_num clientPort_num contentType_num error_info_num host_num httpMethod_num httpVersion_num instanceId_num originalHost_num originalRequestUriWithArgs_num requestUri_num serverResponseLatency_num timeTaken_num userAgent_num WAFEvaluationTime_num WAFMode_num
