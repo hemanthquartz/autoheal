@@ -29,12 +29,21 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-60m
     AND isnotnull(userAgent) AND isnotnull(WAFEvaluationTime)
     AND isnotnull(WAFMode)
 | eval replication_factor=case(
-    httpStatus=500,10,
-    httpStatus=502,20,
-    httpStatus=503,15,
-    httpStatus=504,10,
-    httpStatus=429,5,
-    httpStatus>=400 AND httpStatus<500,3,
+    httpStatus=409,100,
+    httpStatus=415,100,
+    httpStatus=499,100,
+    httpStatus=502,100,
+    httpStatus=504,80,
+    httpStatus=500,20,
+    httpStatus=503,8,
+    httpStatus=400,8,
+    httpStatus=404,6,
+    httpStatus=403,4,
+    httpStatus=408,8,
+    httpStatus=429,4,
+    httpStatus=204,50,
+    httpStatus=302,2,
+    httpStatus=303,2,
     true(),1)
 | eval repeat=mvjoin(mvrange(0, replication_factor), ",")
 | makemv delim="," repeat
