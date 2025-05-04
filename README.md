@@ -36,24 +36,17 @@ by _time
 | appendpipe [
     makeresults
     | eval _time=relative_time(now(), "+1m")
-    | eval avg_serverResponseLatency=0,
-           avg_timeTaken=0,
-           avg_WAFEvaluationTime=0,
-           avg_latency_ratio=0,
-           avg_waf_latency_ratio=0,
-           avg_log_serverResponseLatency=0,
-           avg_log_timeTaken=0,
-           avg_log_WAFEvaluationTime=0,
-           avg_latency_bucket=0,
-           avg_hour_of_day=strftime(relative_time(now(),"+1m"),"%H"),
-           avg_weekday=strftime(relative_time(now(),"+1m"),"%w"),
-           actual_5xx_count=0
-    | append [| makeresults | eval _time=relative_time(now(), "+2m") | eval avg_serverResponseLatency=0, avg_timeTaken=0, avg_WAFEvaluationTime=0, avg_latency_ratio=0, avg_waf_latency_ratio=0, avg_log_serverResponseLatency=0, avg_log_timeTaken=0, avg_log_WAFEvaluationTime=0, avg_latency_bucket=0, avg_hour_of_day=strftime(relative_time(now(),"+2m"),"%H"), avg_weekday=strftime(relative_time(now(),"+2m"),"%w"), actual_5xx_count=0 ]
-    | append [| makeresults | eval _time=relative_time(now(), "+3m") | eval avg_serverResponseLatency=0, avg_timeTaken=0, avg_WAFEvaluationTime=0, avg_latency_ratio=0, avg_waf_latency_ratio=0, avg_log_serverResponseLatency=0, avg_log_timeTaken=0, avg_log_WAFEvaluationTime=0, avg_latency_bucket=0, avg_hour_of_day=strftime(relative_time(now(),"+3m"),"%H"), avg_weekday=strftime(relative_time(now(),"+3m"),"%w"), actual_5xx_count=0 ]
-    | append [| makeresults | eval _time=relative_time(now(), "+4m") | eval avg_serverResponseLatency=0, avg_timeTaken=0, avg_WAFEvaluationTime=0, avg_latency_ratio=0, avg_waf_latency_ratio=0, avg_log_serverResponseLatency=0, avg_log_timeTaken=0, avg_log_WAFEvaluationTime=0, avg_latency_bucket=0, avg_hour_of_day=strftime(relative_time(now(),"+4m"),"%H"), avg_weekday=strftime(relative_time(now(),"+4m"),"%w"), actual_5xx_count=0 ]
-    | append [| makeresults | eval _time=relative_time(now(), "+5m") | eval avg_serverResponseLatency=0, avg_timeTaken=0, avg_WAFEvaluationTime=0, avg_latency_ratio=0, avg_waf_latency_ratio=0, avg_log_serverResponseLatency=0, avg_log_timeTaken=0, avg_log_WAFEvaluationTime=0, avg_latency_bucket=0, avg_hour_of_day=strftime(relative_time(now(),"+5m"),"%H"), avg_weekday=strftime(relative_time(now(),"+5m"),"%w"), actual_5xx_count=0 ]
+    | append [| makeresults | eval _time=relative_time(now(), "+2m")]
+    | append [| makeresults | eval _time=relative_time(now(), "+3m")]
+    | append [| makeresults | eval _time=relative_time(now(), "+4m")]
+    | append [| makeresults | eval _time=relative_time(now(), "+5m")]
+    | append [| makeresults | eval _time=relative_time(now(), "+6m")]
+    | append [| makeresults | eval _time=relative_time(now(), "+7m")]
+    | append [| makeresults | eval _time=relative_time(now(), "+8m")]
+    | append [| makeresults | eval _time=relative_time(now(), "+9m")]
+    | append [| makeresults | eval _time=relative_time(now(), "+10m")]
 ]
-| sort _time
+| fillnull value=0 avg_serverResponseLatency avg_timeTaken avg_WAFEvaluationTime avg_latency_ratio avg_waf_latency_ratio avg_log_serverResponseLatency avg_log_timeTaken avg_log_WAFEvaluationTime avg_latency_bucket avg_hour_of_day avg_weekday
 | apply error_5xx_forecaster into forecasted_5xx_count
 | eval forecast_time_est=strftime(_time, "%Y-%m-%d %H:%M:%S %Z"),
         actual_time_est=if(isnull(actual_5xx_count), "Waiting for data", strftime(_time, "%Y-%m-%d %H:%M:%S %Z"))
