@@ -8,8 +8,8 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-30m lates
         WAFEvaluationTime=tonumber(WAFEvaluationTime),
         httpStatus=tonumber(httpStatus)
 | bin _time span=1m
-| eval hour_of_day=strftime(_time,"%H"),
-        weekday=strftime(_time,"%w")
+| eval hour_of_day=tonumber(strftime(_time,"%H")),
+        weekday=tonumber(strftime(_time,"%w"))
 | eval latency_ratio=if(timeTaken>0, serverResponseLatency/timeTaken, 0),
         waf_latency_ratio=if(timeTaken>0, WAFEvaluationTime/timeTaken, 0)
 | eval log_serverResponseLatency=log(serverResponseLatency+1),
@@ -49,21 +49,21 @@ by _time
     makeresults count=10
     | streamstats count as forecast_offset
     | eval _time=relative_time(now(), "+"+forecast_offset+"m")
-    | eval avg_serverResponseLatency=last_avg_serverResponseLatency,
-           avg_timeTaken=last_avg_timeTaken,
-           avg_WAFEvaluationTime=last_avg_WAFEvaluationTime,
-           avg_latency_ratio=last_avg_latency_ratio,
-           avg_waf_latency_ratio=last_avg_waf_latency_ratio,
-           avg_log_serverResponseLatency=last_avg_log_serverResponseLatency,
-           avg_log_timeTaken=last_avg_log_timeTaken,
-           avg_log_WAFEvaluationTime=last_avg_log_WAFEvaluationTime,
-           avg_latency_bucket=last_avg_latency_bucket,
-           avg_hour_of_day=strftime(_time,"%H"),
-           avg_weekday=strftime(_time,"%w"),
+    | eval avg_serverResponseLatency=tonumber(last_avg_serverResponseLatency),
+           avg_timeTaken=tonumber(last_avg_timeTaken),
+           avg_WAFEvaluationTime=tonumber(last_avg_WAFEvaluationTime),
+           avg_latency_ratio=tonumber(last_avg_latency_ratio),
+           avg_waf_latency_ratio=tonumber(last_avg_waf_latency_ratio),
+           avg_log_serverResponseLatency=tonumber(last_avg_log_serverResponseLatency),
+           avg_log_timeTaken=tonumber(last_avg_log_timeTaken),
+           avg_log_WAFEvaluationTime=tonumber(last_avg_log_WAFEvaluationTime),
+           avg_latency_bucket=tonumber(last_avg_latency_bucket),
+           avg_hour_of_day=tonumber(strftime(_time,"%H")),
+           avg_weekday=tonumber(strftime(_time,"%w")),
            actual_5xx_count=null()
 ]
 | fields - last_*
-| sort - _time
+| sort _time
 | fillnull value=0 avg_serverResponseLatency avg_timeTaken avg_WAFEvaluationTime avg_latency_ratio avg_waf_latency_ratio avg_log_serverResponseLatency avg_log_timeTaken avg_log_WAFEvaluationTime avg_latency_bucket avg_hour_of_day avg_weekday
 | apply error_5xx_forecaster into forecasted_5xx_count
 | eval forecast_time_est=strftime(_time, "%Y-%m-%d %H:%M:%S %Z"),
