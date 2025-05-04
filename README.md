@@ -33,24 +33,37 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-30m lates
         avg(hour_of_day) as avg_hour_of_day
         avg(weekday) as avg_weekday
 by _time
-| append 
-    [| makeresults count=10
-     | streamstats count as forecast_offset
-     | eval _time=relative_time(now(), "+"+forecast_offset+"m")
-     | eval avg_serverResponseLatency=0,
-            avg_timeTaken=0,
-            avg_WAFEvaluationTime=0,
-            avg_latency_ratio=0,
-            avg_waf_latency_ratio=0,
-            avg_log_serverResponseLatency=0,
-            avg_log_timeTaken=0,
-            avg_log_WAFEvaluationTime=0,
-            avg_latency_bucket=0,
-            avg_hour_of_day=strftime(_time,"%H"),
-            avg_weekday=strftime(_time,"%w"),
-            actual_5xx_count=null()
-    ]
 | sort _time
+| streamstats current=f last(avg_serverResponseLatency) as last_avg_serverResponseLatency
+               last(avg_timeTaken) as last_avg_timeTaken
+               last(avg_WAFEvaluationTime) as last_avg_WAFEvaluationTime
+               last(avg_latency_ratio) as last_avg_latency_ratio
+               last(avg_waf_latency_ratio) as last_avg_waf_latency_ratio
+               last(avg_log_serverResponseLatency) as last_avg_log_serverResponseLatency
+               last(avg_log_timeTaken) as last_avg_log_timeTaken
+               last(avg_log_WAFEvaluationTime) as last_avg_log_WAFEvaluationTime
+               last(avg_latency_bucket) as last_avg_latency_bucket
+               last(avg_hour_of_day) as last_avg_hour_of_day
+               last(avg_weekday) as last_avg_weekday
+| append [
+    makeresults count=10
+    | streamstats count as forecast_offset
+    | eval _time=relative_time(now(), "+"+forecast_offset+"m")
+    | eval avg_serverResponseLatency=last_avg_serverResponseLatency,
+           avg_timeTaken=last_avg_timeTaken,
+           avg_WAFEvaluationTime=last_avg_WAFEvaluationTime,
+           avg_latency_ratio=last_avg_latency_ratio,
+           avg_waf_latency_ratio=last_avg_waf_latency_ratio,
+           avg_log_serverResponseLatency=last_avg_log_serverResponseLatency,
+           avg_log_timeTaken=last_avg_log_timeTaken,
+           avg_log_WAFEvaluationTime=last_avg_log_WAFEvaluationTime,
+           avg_latency_bucket=last_avg_latency_bucket,
+           avg_hour_of_day=strftime(_time,"%H"),
+           avg_weekday=strftime(_time,"%w"),
+           actual_5xx_count=null()
+]
+| fields - last_*
+| sort - _time
 | fillnull value=0 avg_serverResponseLatency avg_timeTaken avg_WAFEvaluationTime avg_latency_ratio avg_waf_latency_ratio avg_log_serverResponseLatency avg_log_timeTaken avg_log_WAFEvaluationTime avg_latency_bucket avg_hour_of_day avg_weekday
 | apply error_5xx_forecaster into forecasted_5xx_count
 | eval forecast_time_est=strftime(_time, "%Y-%m-%d %H:%M:%S %Z"),
