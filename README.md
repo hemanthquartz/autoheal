@@ -1,4 +1,4 @@
-index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-60m latest=-5m
+index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-120m latest=-10m
 | spath path=body.properties.httpStatus output=httpStatus
 | spath path=body.properties.clientIP output=clientIP
 | spath path=body.properties.clientPort output=clientPort
@@ -61,18 +61,16 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-60m lates
         serverResponseLatency<0.1,2,
         serverResponseLatency<1,3,
         true(),4)
-| eval error_5xx=if(httpStatus>=500 AND httpStatus<600,1,0)
-| bin _time span=1m
-| stats sum(error_5xx) as error_5xx_count avg(latency_ratio) as latency_ratio avg(waf_latency_ratio) as waf_latency_ratio avg(log_serverResponseLatency) as log_serverResponseLatency avg(log_timeTaken) as log_timeTaken avg(log_WAFEvaluationTime) as log_WAFEvaluationTime avg(latency_bucket) as latency_bucket avg(hour_of_day) as hour_of_day avg(weekday) as weekday by _time
-| fit RandomForestClassifier error_5xx_count from latency_ratio waf_latency_ratio log_serverResponseLatency log_timeTaken log_WAFEvaluationTime latency_bucket hour_of_day weekday into realtime_5xx_forecaster
+| eval label=if(httpStatus>=500 AND httpStatus<600,1,0)
+| fields hour_of_day weekday latency_ratio waf_latency_ratio log_serverResponseLatency log_timeTaken log_WAFEvaluationTime latency_bucket label
+| fit RandomForestClassifier label from hour_of_day weekday latency_ratio waf_latency_ratio log_serverResponseLatency log_timeTaken log_WAFEvaluationTime latency_bucket into future_500_forecaster
 
 
 
 
 
 
-
-index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-15m
+index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-10m latest=+15m
 | spath path=body.properties.httpStatus output=httpStatus
 | spath path=body.properties.serverResponseLatency output=serverResponseLatency
 | spath path=body.properties.timeTaken output=timeTaken
@@ -81,6 +79,13 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-15m
         timeTaken=tonumber(timeTaken),
         WAFEvaluationTime=tonumber(WAFEvaluationTime),
         httpStatus=tonumber(httpStatus)
+| bin _time span=1m
+| stats 
+    avg(serverResponseLatency) as serverResponseLatency,
+    avg(timeTaken) as timeTaken,
+    avg(WAFEvaluationTime) as WAFEvaluationTime,
+    count(eval(httpStatus>=500 AND httpStatus<600)) as actual_5xx_count
+    by _time
 | eval hour_of_day=strftime(_time,"%H"),
         weekday=strftime(_time,"%w")
 | eval latency_ratio=if(timeTaken>0, serverResponseLatency/timeTaken, 0),
@@ -93,9 +98,8 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-15m
         serverResponseLatency<0.1,2,
         serverResponseLatency<1,3,
         true(),4)
-| bin _time span=1m
-| stats avg(latency_ratio) as latency_ratio avg(waf_latency_ratio) as waf_latency_ratio avg(log_serverResponseLatency) as log_serverResponseLatency avg(log_timeTaken) as log_timeTaken avg(log_WAFEvaluationTime) as log_WAFEvaluationTime avg(latency_bucket) as latency_bucket avg(hour_of_day) as hour_of_day avg(weekday) as weekday sum(eval(httpStatus>=500 AND httpStatus<600)) as actual_5xx_count by _time
-| apply realtime_5xx_forecaster as forecasted_5xx_count
-| eval actual_time=_time, forecast_time=_time+600
-| table actual_time forecast_time forecasted_5xx_count actual_5xx_count
-| sort actual_time
+| apply future_500_forecaster
+| eval forecast_5xx_count=if(predicted_label=1,1,0)
+| eval actual_time_est=strftime(_time,"%Y-%m-%d %H:%M:%S %Z"),
+        forecast_time_est=strftime(relative_time(_time,"+10m"),"%Y-%m-%d %H:%M:%S %Z")
+| table actual_time_est forecast_time_est forecast_5xx_count actual_5xx_count
