@@ -63,6 +63,8 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-15m lates
 | bin _time span=1m
 | eval forecast_time=_time+600
 | stats sum(prediction) as forecasted_502_count by forecast_time
+| eval type="forecast"
+| eval forecast_time_est=strftime(forecast_time,"%Y-%m-%d %H:%M:%S %Z")
 | append [
     search index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-5m latest=now
     | spath path=body.properties.httpStatus output=httpStatus
@@ -70,7 +72,10 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-15m lates
     | bin _time span=1m
     | stats count(eval(httpStatus=502)) as actual_502_count by _time
     | eval forecast_time=_time
+    | eval type="actual"
+    | eval forecast_time_est=strftime(forecast_time,"%Y-%m-%d %H:%M:%S %Z")
 ]
-| eval forecast_time_est=strftime(forecast_time, "%Y-%m-%d %H:%M:%S %Z")
-| fields forecast_time_est forecast_time forecasted_502_count actual_502_count
-| sort - forecast_time
+| stats max(forecasted_502_count) as forecasted_502_count max(actual_502_count) as actual_502_count values(type) as types by forecast_time forecast_time_est
+| eval actual_time_est=if(match(types,"actual"),forecast_time_est,null())
+| fields forecast_time_est actual_time_est forecasted_502_count actual_502_count
+| sort - forecast_time_est
