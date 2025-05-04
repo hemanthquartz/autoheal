@@ -61,17 +61,16 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-15m lates
         WAFMode_num=tonumber(substr(md5(WAFMode),1,7),16)
 | apply httpStatus502_forecast_model as prediction
 | bin _time span=1m
-| stats sum(prediction) as forecasted_502_count, sum(eval(httpStatus=502)) as actual_502_count by _time
 | eval forecast_time=_time+600
-| appendpipe [
-    makeresults count=15
-    | eval forecast_time=relative_time(now(), "+1m*@min")
-    | eval _time=forecast_time-600
-    | accum forecast_time as forecast_time
-    | streamstats count as future_minutes
-    | eval forecast_time=_time+((future_minutes+10)*60)
-    | fields forecast_time
+| stats sum(prediction) as forecasted_502_count by forecast_time
+| append [
+    search index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-5m latest=now
+    | spath path=body.properties.httpStatus output=httpStatus
+    | eval httpStatus=tonumber(httpStatus)
+    | bin _time span=1m
+    | stats count(eval(httpStatus=502)) as actual_502_count by _time
+    | eval forecast_time=_time
 ]
-| eval forecast_time_est=strftime(forecast_time,"%Y-%m-%d %H:%M:%S %Z"), actual_time_est=strftime(_time,"%Y-%m-%d %H:%M:%S %Z")
-| table forecast_time_est actual_time_est forecasted_502_count actual_502_count
-| sort - forecast_time_est
+| eval forecast_time_est=strftime(forecast_time, "%Y-%m-%d %H:%M:%S %Z")
+| fields forecast_time_est forecast_time forecasted_502_count actual_502_count
+| sort - forecast_time
