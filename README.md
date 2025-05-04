@@ -16,11 +16,24 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-15m lates
 | spath path=body.properties.userAgent output=userAgent
 | spath path=body.properties.WAFEvaluationTime output=WAFEvaluationTime
 | spath path=body.properties.WAFMode output=WAFMode
-| eval clientPort=tonumber(clientPort),
-        serverResponseLatency=tonumber(serverResponseLatency),
-        timeTaken=tonumber(timeTaken),
-        WAFEvaluationTime=tonumber(WAFEvaluationTime),
-        httpStatus=tonumber(httpStatus)
+| eval clientPort=coalesce(tonumber(clientPort),0),
+        serverResponseLatency=coalesce(tonumber(serverResponseLatency),0),
+        timeTaken=coalesce(tonumber(timeTaken),0),
+        WAFEvaluationTime=coalesce(tonumber(WAFEvaluationTime),0),
+        httpStatus=coalesce(tonumber(httpStatus),0)
+| fillnull value=""
+| eval clientIP=coalesce(clientIP,"none"),
+        contentType=coalesce(contentType,"none"),
+        error_info=coalesce(error_info,"none"),
+        host=coalesce(host,"none"),
+        httpMethod=coalesce(httpMethod,"none"),
+        httpVersion=coalesce(httpVersion,"none"),
+        instanceId=coalesce(instanceId,"none"),
+        originalHost=coalesce(originalHost,"none"),
+        originalRequestUriWithArgs=coalesce(originalRequestUriWithArgs,"none"),
+        requestUri=coalesce(requestUri,"none"),
+        userAgent=coalesce(userAgent,"none"),
+        WAFMode=coalesce(WAFMode,"none")
 | eval hour_of_day=strftime(_time,"%H"),
         weekday=strftime(_time,"%w")
 | eval latency_ratio=if(timeTaken>0, serverResponseLatency/timeTaken, 0),
