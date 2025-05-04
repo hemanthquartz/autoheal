@@ -33,21 +33,27 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-30m lates
         avg(hour_of_day) as avg_hour_of_day
         avg(weekday) as avg_weekday
 by _time
-| appendpipe [
-    makeresults
-    | eval _time=relative_time(now(), "+1m")
-    | append [| makeresults | eval _time=relative_time(now(), "+2m")]
-    | append [| makeresults | eval _time=relative_time(now(), "+3m")]
-    | append [| makeresults | eval _time=relative_time(now(), "+4m")]
-    | append [| makeresults | eval _time=relative_time(now(), "+5m")]
-    | append [| makeresults | eval _time=relative_time(now(), "+6m")]
-    | append [| makeresults | eval _time=relative_time(now(), "+7m")]
-    | append [| makeresults | eval _time=relative_time(now(), "+8m")]
-    | append [| makeresults | eval _time=relative_time(now(), "+9m")]
-    | append [| makeresults | eval _time=relative_time(now(), "+10m")]
-]
+| append 
+    [| makeresults count=10
+     | streamstats count as forecast_offset
+     | eval _time=relative_time(now(), "+"+forecast_offset+"m")
+     | eval avg_serverResponseLatency=0,
+            avg_timeTaken=0,
+            avg_WAFEvaluationTime=0,
+            avg_latency_ratio=0,
+            avg_waf_latency_ratio=0,
+            avg_log_serverResponseLatency=0,
+            avg_log_timeTaken=0,
+            avg_log_WAFEvaluationTime=0,
+            avg_latency_bucket=0,
+            avg_hour_of_day=strftime(_time,"%H"),
+            avg_weekday=strftime(_time,"%w"),
+            actual_5xx_count=null()
+    ]
+| sort _time
 | fillnull value=0 avg_serverResponseLatency avg_timeTaken avg_WAFEvaluationTime avg_latency_ratio avg_waf_latency_ratio avg_log_serverResponseLatency avg_log_timeTaken avg_log_WAFEvaluationTime avg_latency_bucket avg_hour_of_day avg_weekday
 | apply error_5xx_forecaster into forecasted_5xx_count
 | eval forecast_time_est=strftime(_time, "%Y-%m-%d %H:%M:%S %Z"),
         actual_time_est=if(isnull(actual_5xx_count), "Waiting for data", strftime(_time, "%Y-%m-%d %H:%M:%S %Z"))
-| table actual_time_est forecast_time_est forecasted_5xx_count actual_5xx_count
+| table forecast_time_est actual_time_est forecasted_5xx_count actual_5xx_count
+| sort - forecast_time_est
