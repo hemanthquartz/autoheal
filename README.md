@@ -29,25 +29,38 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-60m
     AND isnotnull(userAgent) AND isnotnull(WAFEvaluationTime)
     AND isnotnull(WAFMode)
 | eval replication_factor=case(
-    httpStatus=409,100,
-    httpStatus=415,100,
-    httpStatus=499,100,
-    httpStatus=502,100,
-    httpStatus=504,80,
-    httpStatus=500,20,
-    httpStatus=503,8,
-    httpStatus=400,8,
-    httpStatus=404,6,
-    httpStatus=403,4,
-    httpStatus=408,8,
-    httpStatus=429,4,
     httpStatus=204,50,
     httpStatus=302,2,
     httpStatus=303,2,
+    httpStatus=400,10,
+    httpStatus=401,2,
+    httpStatus=403,5,
+    httpStatus=404,7,
+    httpStatus=408,8,
+    httpStatus=409,100,
+    httpStatus=415,100,
+    httpStatus=429,5,
+    httpStatus=499,80,
+    httpStatus=500,25,
+    httpStatus=502,80,
+    httpStatus=503,10,
+    httpStatus=504,70,
     true(),1)
 | eval repeat=mvjoin(mvrange(0, replication_factor), ",")
 | makemv delim="," repeat
 | mvexpand repeat
+| eval hour_of_day=strftime(_time,"%H"),
+        weekday=strftime(_time,"%w")
+| eval latency_ratio=if(timeTaken>0, serverResponseLatency/timeTaken, 0),
+        waf_latency_ratio=if(timeTaken>0, WAFEvaluationTime/timeTaken, 0)
+| eval log_serverResponseLatency=log(serverResponseLatency+1),
+        log_timeTaken=log(timeTaken+1),
+        log_WAFEvaluationTime=log(WAFEvaluationTime+1)
+| eval latency_bucket=case(
+        serverResponseLatency<0.01,1,
+        serverResponseLatency<0.1,2,
+        serverResponseLatency<1,3,
+        true(),4)
 | eval clientIP_num=tonumber(substr(md5(clientIP),1,7),16),
         clientPort_num=clientPort,
         contentType_num=tonumber(substr(md5(contentType),1,7),16),
@@ -59,9 +72,9 @@ index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-60m
         originalHost_num=tonumber(substr(md5(originalHost),1,7),16),
         originalRequestUriWithArgs_num=tonumber(substr(md5(originalRequestUriWithArgs),1,7),16),
         requestUri_num=tonumber(substr(md5(requestUri),1,7),16),
-        serverResponseLatency_num=serverResponseLatency,
-        timeTaken_num=timeTaken,
         userAgent_num=tonumber(substr(md5(userAgent),1,7),16),
-        WAFEvaluationTime_num=WAFEvaluationTime,
         WAFMode_num=tonumber(substr(md5(WAFMode),1,7),16)
-| table _time httpStatus clientIP_num clientPort_num contentType_num error_info_num host_num httpMethod_num httpVersion_num instanceId_num originalHost_num originalRequestUriWithArgs_num requestUri_num serverResponseLatency_num timeTaken_num userAgent_num WAFEvaluationTime_num WAFMode_num
+| eval serverResponseLatency_num=serverResponseLatency,
+        timeTaken_num=timeTaken,
+        WAFEvaluationTime_num=WAFEvaluationTime
+| table _time httpStatus clientIP_num clientPort_num contentType_num error_info_num host_num httpMethod_num httpVersion_num instanceId_num originalHost_num originalRequestUriWithArgs_num requestUri_num serverResponseLatency_num timeTaken_num userAgent_num WAFEvaluationTime_num WAFMode_num latency_ratio waf_latency_ratio log_serverResponseLatency log_timeTaken log_WAFEvaluationTime latency_bucket hour_of_day weekday
