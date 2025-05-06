@@ -1,81 +1,85 @@
-index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-15m latest=now
-| spath path=body.properties.httpStatus output=httpStatus
-| spath path=body.properties.clientIP output=clientIP
-| spath path=body.properties.clientPort output=clientPort
-| spath path=body.properties.contentType output=contentType
-| spath path=body.properties.error_info output=error_info
-| spath path=body.properties.host output=host
-| spath path=body.properties.httpMethod output=httpMethod
-| spath path=body.properties.httpVersion output=httpVersion
-| spath path=body.properties.instanceId output=instanceId
-| spath path=body.properties.originalHost output=originalHost
-| spath path=body.properties.originalRequestUriWithArgs output=originalRequestUriWithArgs
-| spath path=body.properties.requestUri output=requestUri
-| spath path=body.properties.serverResponseLatency output=serverResponseLatency
-| spath path=body.properties.timeTaken output=timeTaken
-| spath path=body.properties.userAgent output=userAgent
-| spath path=body.properties.WAFEvaluationTime output=WAFEvaluationTime
-| spath path=body.properties.WAFMode output=WAFMode
-| eval clientPort=coalesce(tonumber(clientPort),0),
-        serverResponseLatency=coalesce(tonumber(serverResponseLatency),0),
-        timeTaken=coalesce(tonumber(timeTaken),0),
-        WAFEvaluationTime=coalesce(tonumber(WAFEvaluationTime),0),
-        httpStatus=coalesce(tonumber(httpStatus),0)
-| fillnull value=""
-| eval clientIP=coalesce(clientIP,"none"),
-        contentType=coalesce(contentType,"none"),
-        error_info=coalesce(error_info,"none"),
-        host=coalesce(host,"none"),
-        httpMethod=coalesce(httpMethod,"none"),
-        httpVersion=coalesce(httpVersion,"none"),
-        instanceId=coalesce(instanceId,"none"),
-        originalHost=coalesce(originalHost,"none"),
-        originalRequestUriWithArgs=coalesce(originalRequestUriWithArgs,"none"),
-        requestUri=coalesce(requestUri,"none"),
-        userAgent=coalesce(userAgent,"none"),
-        WAFMode=coalesce(WAFMode,"none")
-| eval hour_of_day=strftime(_time,"%H"),
-        weekday=strftime(_time,"%w")
-| eval latency_ratio=if(timeTaken>0, serverResponseLatency/timeTaken, 0),
-        waf_latency_ratio=if(timeTaken>0, WAFEvaluationTime/timeTaken, 0)
-| eval log_serverResponseLatency=log(serverResponseLatency+1),
-        log_timeTaken=log(timeTaken+1),
-        log_WAFEvaluationTime=log(WAFEvaluationTime+1)
-| eval latency_bucket=case(
-        serverResponseLatency<0.01,1,
-        serverResponseLatency<0.1,2,
-        serverResponseLatency<1,3,
-        true(),4)
-| eval clientIP_num=tonumber(substr(md5(clientIP),1,7),16),
-        clientPort_num=clientPort,
-        contentType_num=tonumber(substr(md5(contentType),1,7),16),
-        error_info_num=tonumber(substr(md5(error_info),1,7),16),
-        host_num=tonumber(substr(md5(host),1,7),16),
-        httpMethod_num=tonumber(substr(md5(httpMethod),1,7),16),
-        httpVersion_num=tonumber(substr(md5(httpVersion),1,7),16),
-        instanceId_num=tonumber(substr(md5(instanceId),1,7),16),
-        originalHost_num=tonumber(substr(md5(originalHost),1,7),16),
-        originalRequestUriWithArgs_num=tonumber(substr(md5(originalRequestUriWithArgs),1,7),16),
-        requestUri_num=tonumber(substr(md5(requestUri),1,7),16),
-        userAgent_num=tonumber(substr(md5(userAgent),1,7),16),
-        WAFMode_num=tonumber(substr(md5(WAFMode),1,7),16)
-| apply httpStatus502_forecast_model as prediction
-| bin _time span=1m
-| eval forecast_time=_time+600
-| stats sum(prediction) as forecasted_502_count by forecast_time
-| eval type="forecast"
-| eval forecast_time_est=strftime(forecast_time,"%Y-%m-%d %H:%M:%S %Z")
-| append [
-    search index=* sourcetype="mscs:azure:eventhub" source="*/network;" earliest=-5m latest=now
-    | spath path=body.properties.httpStatus output=httpStatus
-    | eval httpStatus=tonumber(httpStatus)
-    | bin _time span=1m
-    | stats count(eval(httpStatus=502)) as actual_502_count by _time
-    | eval forecast_time=_time
-    | eval type="actual"
-    | eval forecast_time_est=strftime(forecast_time,"%Y-%m-%d %H:%M:%S %Z")
-]
-| stats max(forecasted_502_count) as forecasted_502_count max(actual_502_count) as actual_502_count values(type) as types by forecast_time forecast_time_est
-| eval actual_time_est=if(match(types,"actual"),forecast_time_est,null())
-| fields forecast_time_est actual_time_est forecasted_502_count actual_502_count
-| sort - forecast_time_est
+name: List Splunk Cloud Components
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Splunk Environment (dev, qa, prod)'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - qa
+          - prod
+      action_type:
+        description: 'Action to perform (indexes, tokens, users, roles)'
+        required: true
+        default: 'indexes'
+        type: choice
+        options:
+          - indexes
+          - tokens
+          - users
+          - roles
+
+jobs:
+  list_components:
+    runs-on: ubuntu-latest
+    env:
+      SPLUNK_PASSWORD: ${{ secrets.SPLUNK_PASSWORD }}
+      SPLUNK_STACK: ${{ secrets.SPLUNK_STACK }}
+      SPLUNK_TOKEN: ${{ secrets.SPLUNK_TOKEN }}
+      SPLUNK_URL: ${{ secrets.SPLUNK_URL }}
+      SPLUNK_USERNAME: ${{ secrets.SPLUNK_USERNAME }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set environment variables based on selected environment
+        run: |
+          echo "Selected environment: ${{ github.event.inputs.environment }}"
+          if [ "${{ github.event.inputs.environment }}" == "dev" ]; then
+            echo "SPLUNK_URL=${{ secrets.SPLUNK_URL }}" >> $GITHUB_ENV
+          elif [ "${{ github.event.inputs.environment }}" == "qa" ]; then
+            echo "SPLUNK_URL=${{ secrets.SPLUNK_URL }}" >> $GITHUB_ENV
+          elif [ "${{ github.event.inputs.environment }}" == "prod" ]; then
+            echo "SPLUNK_URL=${{ secrets.SPLUNK_URL }}" >> $GITHUB_ENV
+          else
+            echo "Invalid environment selected."
+            exit 1
+          fi
+
+      - name: Perform Splunk list action
+        run: |
+          echo "Action selected: ${{ github.event.inputs.action_type }}"
+
+          # Prepare the URL based on the action
+          if [ "${{ github.event.inputs.action_type }}" == "indexes" ]; then
+            API_PATH="/services/data/indexes?count=0&output_mode=json"
+          elif [ "${{ github.event.inputs.action_type }}" == "tokens" ]; then
+            API_PATH="/services/authorization/tokens?count=0&output_mode=json"
+          elif [ "${{ github.event.inputs.action_type }}" == "users" ]; then
+            API_PATH="/services/authentication/users?count=0&output_mode=json"
+          elif [ "${{ github.event.inputs.action_type }}" == "roles" ]; then
+            API_PATH="/services/authorization/roles?count=0&output_mode=json"
+          else
+            echo "Invalid action type selected."
+            exit 1
+          fi
+
+          FULL_URL="https://${{ env.SPLUNK_STACK }}.${{ env.SPLUNK_URL }}${API_PATH}"
+
+          echo "Calling URL: $FULL_URL"
+
+          curl -k -sS --request GET "$FULL_URL" \
+            --header "Authorization: Bearer ${{ env.SPLUNK_TOKEN }}" \
+            --header "Content-Type: application/json" > splunk_list_output.json
+
+          echo "Output saved to splunk_list_output.json"
+
+      - name: Upload output as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: splunk-list-output
+          path: splunk_list_output.json
