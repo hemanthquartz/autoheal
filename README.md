@@ -27,28 +27,13 @@ jobs:
   list_components:
     runs-on: ubuntu-latest
     env:
-      SPLUNK_PASSWORD: ${{ secrets.SPLUNK_PASSWORD }}
-      SPLUNK_STACK: ${{ secrets.SPLUNK_STACK }}
-      SPLUNK_TOKEN: ${{ secrets.SPLUNK_TOKEN }}
-      SPLUNK_URL: ${{ secrets.SPLUNK_URL }}
-      SPLUNK_USERNAME: ${{ secrets.SPLUNK_USERNAME }}
+      stack: ${{ secrets.SPLUNK_STACK }}
+      stack_jwt: ${{ secrets.SPLUNK_TOKEN }}
+      acs: ${{ secrets.SPLUNK_URL }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Set environment variables based on selected environment
-        run: |
-          echo "Selected environment: ${{ github.event.inputs.environment }}"
-          if [ "${{ github.event.inputs.environment }}" == "dev" ]; then
-            echo "SPLUNK_URL=${{ secrets.SPLUNK_URL }}" >> $GITHUB_ENV
-          elif [ "${{ github.event.inputs.environment }}" == "qa" ]; then
-            echo "SPLUNK_URL=${{ secrets.SPLUNK_URL }}" >> $GITHUB_ENV
-          elif [ "${{ github.event.inputs.environment }}" == "prod" ]; then
-            echo "SPLUNK_URL=${{ secrets.SPLUNK_URL }}" >> $GITHUB_ENV
-          else
-            echo "Invalid environment selected."
-            exit 1
-          fi
 
       - name: Perform Splunk list action
         run: |
@@ -56,24 +41,20 @@ jobs:
 
           # Prepare the URL based on the action
           if [ "${{ github.event.inputs.action_type }}" == "indexes" ]; then
-            API_PATH="/services/data/indexes?count=0&output_mode=json"
+            API_PATH="/adminconfig/v2/indexes"
           elif [ "${{ github.event.inputs.action_type }}" == "tokens" ]; then
-            API_PATH="/services/authorization/tokens?count=0&output_mode=json"
+            API_PATH="/adminconfig/v2/tokens"
           elif [ "${{ github.event.inputs.action_type }}" == "users" ]; then
-            API_PATH="/services/authentication/users?count=0&output_mode=json"
+            API_PATH="/adminconfig/v2/users"
           elif [ "${{ github.event.inputs.action_type }}" == "roles" ]; then
-            API_PATH="/services/authorization/roles?count=0&output_mode=json"
+            API_PATH="/adminconfig/v2/roles"
           else
             echo "Invalid action type selected."
             exit 1
           fi
 
-          FULL_URL="https://${{ env.SPLUNK_STACK }}.${{ env.SPLUNK_URL }}${API_PATH}"
-
-          echo "Calling URL: $FULL_URL"
-
-          curl -k -sS --request GET "$FULL_URL" \
-            --header "Authorization: Bearer ${{ env.SPLUNK_TOKEN }}" \
+          curl -s "https://${acs}/${stack}${API_PATH}" \
+            --header "Authorization: Bearer ${stack_jwt}" \
             --header "Content-Type: application/json" > splunk_list_output.json
 
           echo "Output saved to splunk_list_output.json"
@@ -83,3 +64,4 @@ jobs:
         with:
           name: splunk-list-output
           path: splunk_list_output.json
+          retention-days: 5
