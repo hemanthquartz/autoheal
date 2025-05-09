@@ -1,67 +1,53 @@
-name: List Splunk Cloud Components
+#!/usr/bin/env bash -e
 
-on:
-  workflow_dispatch:
-    inputs:
-      environment:
-        description: 'Splunk Environment (dev, qa, prod)'
-        required: true
-        default: 'dev'
-        type: choice
-        options:
-          - dev
-          - qa
-          - prod
-      action_type:
-        description: 'Action to perform (indexes, tokens, users, roles)'
-        required: true
-        default: 'indexes'
-        type: choice
-        options:
-          - indexes
-          - tokens
-          - users
-          - roles
+echo "Starting index creation process..."
+indexlist=$(ls $GETTING_WORKSPACE/indexes)
+echo "Index list: $indexlist"
 
-jobs:
-  list_components:
-    runs-on: ubuntu-latest
-    env:
-      stack: ${{ secrets.SPLUNK_STACK }}
-      stack_jwt: ${{ secrets.SPLUNK_TOKEN }}
-      acs: ${{ secrets.SPLUNK_URL }}
+for indexFile in $(ls *.json); do
+  echo "Reading file: $indexFile"
+  indexlist="${indexlist} $(jq -r '.name' ${indexFile})"
+done
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+echo "Combined Index List: $indexlist"
+cloudList=$(jq -r '.[].name' /tmp/currentIndexConfiguration.json)
+echo "Cloud Index List: $cloudList"
 
-      - name: Perform Splunk list action
-        run: |
-          echo "Action selected: ${{ github.event.inputs.action_type }}"
+for index in ${indexlist}; do
+  echo "Checking if $index exists in cloud..."
+  if [[ $(echo "${cloudList}" | grep "^${index}$") ]]; then
+    echo "$index already exists in cloud"
+  else
+    echo "Creating Index: $index"
+    
+    if [[ ! -f "${index}.json" ]]; then
+      echo "ERROR: JSON file ${index}.json not found"
+      exit 1
+    fi
 
-          # Prepare the URL based on the action
-          if [ "${{ github.event.inputs.action_type }}" == "indexes" ]; then
-            API_PATH="/adminconfig/v2/indexes"
-          elif [ "${{ github.event.inputs.action_type }}" == "tokens" ]; then
-            API_PATH="/adminconfig/v2/tokens"
-          elif [ "${{ github.event.inputs.action_type }}" == "users" ]; then
-            API_PATH="/adminconfig/v2/users"
-          elif [ "${{ github.event.inputs.action_type }}" == "roles" ]; then
-            API_PATH="/adminconfig/v2/roles"
-          else
-            echo "Invalid action type selected."
-            exit 1
-          fi
+    echo "Sending curl request to create index..."
+    curl -v -X POST "https://${stack}/adminconfig/v2/indexes" \
+      --header "Authorization: ${token}" \
+      --header 'Content-Type: application/json' \
+      --data-raw "$(cat ${index}.json)" || { echo "Curl command failed for index ${index}"; exit 1; }
 
-          curl -s "https://${acs}/${stack}${API_PATH}" \
-            --header "Authorization: Bearer ${stack_jwt}" \
-            --header "Content-Type: application/json" > splunk_list_output.json
+    sleep 3
 
-          echo "Output saved to splunk_list_output.json"
+    echo "Checking creation status..."
+    indexCreationStatus=$(curl -s "https://${stack}/adminconfig/v2/indexes/${index}" \
+      --header "Authorization: ${token}") || { echo "Failed to check creation status for ${index}"; exit 1; }
 
-      - name: Upload output as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: splunk-list-output
-          path: splunk_list_output.json
-          retention-days: 5
+    echo "Raw creation status: $indexCreationStatus"
+    LOOPCOUNTER=0
+
+    while [[ $(echo ${indexCreationStatus} | jq -r '.code') == "404-index-not-found" ]]; do
+      echo "Sleeping... [${LOOPCOUNTER} miss(es)]"
+      sleep 15
+      let LOOPCOUNTER=LOOPCOUNTER+1
+      indexCreationStatus=$(curl -s "https://${stack}/adminconfig/v2/indexes/${index}" \
+        --header "Authorization: ${token}") || { echo "Retry status check failed for ${index}"; exit 1; }
+    done
+
+    echo "[Created Index] => $(echo ${indexCreationStatus} | jq -r '.name')"
+  fi
+done
