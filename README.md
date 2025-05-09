@@ -1,53 +1,48 @@
-#!/usr/bin/env bash -e
+echo "Start: Creating new indexes"
 
-echo "Starting index creation process..."
-indexlist=$(ls $GETTING_WORKSPACE/indexes)
-echo "Index list: $indexlist"
-
-for indexFile in $(ls *.json); do
-  echo "Reading file: $indexFile"
-  indexlist="${indexlist} $(jq -r '.name' ${indexFile})"
+indexlist=""
+echo "Fetching list of index files..."
+for indexFile in $(ls $GITHUB_WORKSPACE/indexes)
+do
+  indexlist="${indexlist} ${indexFile}"
+  echo "Found index file: ${indexFile}"
 done
 
-echo "Combined Index List: $indexlist"
-cloudList=$(jq -r '.[].name' /tmp/currentIndexConfiguration.json)
-echo "Cloud Index List: $cloudList"
+echo "Reading existing indexes from stack..."
+cloudList=$(curl -s -k -X GET "${stack}/adminconfig/v2/indexes" --header "Authorization: ***")
+echo "Fetched cloud index list"
 
-for index in ${indexlist}; do
-  echo "Checking if $index exists in cloud..."
-  if [[ $(echo "${cloudList}" | grep "^${index}$") ]]; then
-    echo "$index already exists in cloud"
-  else
-    echo "Creating Index: $index"
-    
-    if [[ ! -f "${index}.json" ]]; then
-      echo "ERROR: JSON file ${index}.json not found"
-      exit 1
-    fi
-
-    echo "Sending curl request to create index..."
-    curl -v -X POST "https://${stack}/adminconfig/v2/indexes" \
-      --header "Authorization: ${token}" \
+for index in ${indexlist}
+do
+  echo "Checking if index ${index} exists in cloud..."
+  if [[ $(echo "${cloudList}" | jq -r '.[].name') != *"${index}"* ]]; then
+    echo "[Creating Index] : ${index}"
+    echo "Sending curl POST for ${index}"
+    curl -X POST "https://${stack}/adminconfig/v2/indexes" \
+      --header "Authorization: ***" \
       --header 'Content-Type: application/json' \
-      --data-raw "$(cat ${index}.json)" || { echo "Curl command failed for index ${index}"; exit 1; }
+      --data-raw "$(cat ${index}.json)"
+    echo "POST complete"
 
-    sleep 3
+    sleep 5
+    echo "Checking creation status for ${index}"
+    indexCreationStatus=$(curl -s "https://${stack}/adminconfig/v2/indexes/${index}" --header "Authorization: ***")
+    echo "Received index creation status"
 
-    echo "Checking creation status..."
-    indexCreationStatus=$(curl -s "https://${stack}/adminconfig/v2/indexes/${index}" \
-      --header "Authorization: ${token}") || { echo "Failed to check creation status for ${index}"; exit 1; }
-
-    echo "Raw creation status: $indexCreationStatus"
     LOOPCOUNTER=0
-
-    while [[ $(echo ${indexCreationStatus} | jq -r '.code') == "404-index-not-found" ]]; do
-      echo "Sleeping... [${LOOPCOUNTER} miss(es)]"
+    while [[ $(echo ${indexCreationStatus} | jq '.code' | sed 's/\"//g') == "non-index-not-found" ]]
+    do
+      echo "Sleeping... [${LOOPCOUNTER}] missed/up..."
       sleep 15
       let LOOPCOUNTER=LOOPCOUNTER+1
-      indexCreationStatus=$(curl -s "https://${stack}/adminconfig/v2/indexes/${index}" \
-        --header "Authorization: ${token}") || { echo "Retry status check failed for ${index}"; exit 1; }
+      echo "Retrying status check for ${index}"
+      indexCreationStatus=$(curl -s "https://${stack}/adminconfig/v2/indexes/${index}" --header "Authorization: ***")
     done
 
-    echo "[Created Index] => $(echo ${indexCreationStatus} | jq -r '.name')"
+    echo "[Created Index] : $(echo ${indexCreationStatus} | jq '.name')"
+  else
+    echo "[Index exists] Skipping ${index}"
   fi
 done
+
+echo "Done creating indexes"
