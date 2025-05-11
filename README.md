@@ -1,54 +1,57 @@
 - name: Update Existing Indexes
   if: ${{ inputs.select_action == 'update_indexes' }}
   run: |
-    echo "Start: Updating indexes"
-    indexList=""
+    echo "Start: Updating indexes from multi-index files"
     cd parsed_indexes
-    echo "Creating a list of parsed index files..."
-    for indexFile in $(ls)
-    do
-      indexList="${indexList} $(jq -r '.name' ${indexFile})"
-    done
 
-    for index in ${indexList}
-    do
-      echo "[${index}] - Evaluating..."
-      
-      indexFile=$(ls | grep -i "${index}" | head -n1)
-      localIndex=$(jq --sort-keys . ${indexFile})
-      remoteIndex=$(jq --sort-keys '.[] | select(.name=="'${index}'")' /tmp/currentIndexConfiguration.json)
+    for file in $(ls); do
+      echo "Processing file: ${file}"
+      updatesToSend="{}"
 
-      if [[ "$(jq --argjson a "${localIndex}" --argjson b "${remoteIndex}" '$a == $b' <<< '{}')" == "true" ]]; then
-        echo "[${index}] - No Update Required"
-        continue
-      fi
+      count=$(jq length "${file}")
+      for ((i=0; i<$count; i++)); do
+        localIndex=$(jq ".[$i]" "${file}")
+        indexName=$(echo "${localIndex}" | jq -r '.name')
+        echo "Checking index: ${indexName}"
 
-      echo "[${index}] - Local and Remote do not match, updating remote to reflect git"
+        remoteIndex=$(jq --sort-keys '.[] | select(.name=="'${indexName}'")' /tmp/currentIndexConfiguration.json)
 
-      jsonUpdate=$(echo '{}' | jq '.')
-
-      for indexVar in $(echo "${localIndex}" | jq 'del(.name) | del(.datatype)' | jq -r 'keys[]'); do
-        localIndexVar=$(echo "${localIndex}" | jq -r ".${indexVar}")
-        remoteIndexVar=$(echo "${remoteIndex}" | jq -r ".${indexVar}")
-        
-        if [[ "$localIndexVar" != "$remoteIndexVar" ]]; then
-          echo "[${index}] - ${indexVar}: ${remoteIndexVar} -> ${localIndexVar}"
-
-          # Correctly infer numbers vs. strings
-          if [[ "$localIndexVar" =~ ^[0-9]+$ ]]; then
-            jsonUpdate=$(echo "${jsonUpdate}" | jq --arg key "$indexVar" --argjson val "$localIndexVar" '. + {($key): $val}')
-          else
-            jsonUpdate=$(echo "${jsonUpdate}" | jq --arg key "$indexVar" --arg val "$localIndexVar" '. + {($key): $val}')
-          fi
+        # Compare full object
+        if [[ "$(jq --argjson a "${localIndex}" --argjson b "${remoteIndex}" '$a == $b' <<< '{}')" == "true" ]]; then
+          echo "[${indexName}] - No update required"
+          continue
         fi
+
+        echo "[${indexName}] - Will be updated"
+        indexPatch="{}"
+
+        for field in $(echo "${localIndex}" | jq 'del(.name) | del(.datatype)' | jq -r 'keys[]'); do
+          localVal=$(echo "${localIndex}" | jq -r ".${field}")
+          remoteVal=$(echo "${remoteIndex}" | jq -r ".${field}")
+
+          if [[ "$localVal" != "$remoteVal" ]]; then
+            echo " - Field ${field}: ${remoteVal} -> ${localVal}"
+            if [[ "$localVal" =~ ^[0-9]+$ ]]; then
+              indexPatch=$(echo "$indexPatch" | jq --arg key "$field" --argjson val "$localVal" '. + {($key): $val}')
+            else
+              indexPatch=$(echo "$indexPatch" | jq --arg key "$field" --arg val "$localVal" '. + {($key): $val}')
+            fi
+          fi
+        done
+
+        # Add this index's update to the overall JSON payload
+        updatesToSend=$(echo "$updatesToSend" | jq --arg key "$indexName" --argjson val "$indexPatch" '. + {($key): $val}')
       done
 
-      echo "PATCH payload for ${index}: $jsonUpdate"
+      echo "Final PATCH payload for file ${file}: $updatesToSend"
 
-      curl -X PATCH "https://${{ secrets.acs }}/${{ secrets.stack }}/adminconfig/v2/indexes/${index}" \
-        --header "Authorization: Bearer ${{ secrets.stack_jwt }}" \
-        --header "Content-Type: application/json" \
-        --data "${jsonUpdate}"
-
-      echo "Update complete for ${index}"
+      if [[ "$updatesToSend" != "{}" ]]; then
+        curl -X PATCH "https://${{ secrets.acs }}/${{ secrets.stack }}/adminconfig/v2/indexes" \
+          --header "Authorization: Bearer ${{ secrets.stack_jwt }}" \
+          --header "Content-Type: application/json" \
+          --data "$updatesToSend"
+        echo "PATCH completed for file: ${file}"
+      else
+        echo "No changes needed from ${file}"
+      fi
     done
