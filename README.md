@@ -1,64 +1,51 @@
 - name: Update Existing Indexes
   if: ${{ inputs.select_action == 'update_indexes' }}
   run: |
-    echo "Start: Updating indexes from parsed files"
-    cd parsed_indexes
+    echo "Start: Updating indexes"
+    cd $GITHUB_WORKSPACE/indexes
 
-    for file in $(ls); do
-      echo "Processing file: ${file}"
+    for jsonFile in *.json; do
+      echo "Processing file: ${jsonFile}"
+      totalIndexes=$(jq length "$jsonFile")
+      
+      for i in $(seq 0 $(($totalIndexes - 1))); do
+        localIndex=$(jq --sort-keys ".[$i]" "$jsonFile")
+        index=$(echo "$localIndex" | jq -r '.name')
+        echo "[${index}] - Evaluating..."
 
-      fileType=$(jq -r 'type' "$file")
+        remoteIndex=$(jq --sort-keys ".[] | select(.name==\"${index}\")" /tmp/currentIndexConfiguration.json)
 
-      if [[ "$fileType" == "array" ]]; then
-        total=$(jq length "$file")
-        for ((i = 0; i < total; i++)); do
-          localIndex=$(jq ".[$i]" "$file")
-          process_index "$localIndex"
-        done
-      elif [[ "$fileType" == "object" ]]; then
-        localIndex=$(cat "$file")
-        process_index "$localIndex"
-      else
-        echo "Skipping file: $file — unsupported JSON type ($fileType)"
-      fi
-    done
-
-    # Inline function to process and patch index
-    process_index() {
-      local localIndex="$1"
-      indexName=$(echo "$localIndex" | jq -r '.name')
-      echo "Checking index: $indexName"
-
-      remoteIndex=$(jq --sort-keys '.[] | select(.name=="'"$indexName"'")' /tmp/currentIndexConfiguration.json)
-
-      isSame=$(jq --argjson a "$localIndex" --argjson b "$remoteIndex" '$a == $b')
-      if [[ "$isSame" == "true" ]]; then
-        echo "[${indexName}] - No update required"
-        return
-      fi
-
-      echo "[${indexName}] - Will be updated"
-      jsonUpdate=$(echo '{}' | jq '.')
-
-      for field in $(echo "$localIndex" | jq 'del(.name) | del(.datatype)' | jq -r 'keys[]'); do
-        localVal=$(echo "$localIndex" | jq -r ".${field}")
-        remoteVal=$(echo "$remoteIndex" | jq -r ".${field}")
-        if [[ "$localVal" != "$remoteVal" ]]; then
-          echo " - Field ${field}: ${remoteVal} -> ${localVal}"
-          if [[ "$localVal" =~ ^[0-9]+$ ]]; then
-            jsonUpdate=$(echo "$jsonUpdate" | jq --arg key "$field" --argjson val "$localVal" '. + {($key): $val}')
-          else
-            jsonUpdate=$(echo "$jsonUpdate" | jq --arg key "$field" --arg val "$localVal" '. + {($key): $val}')
-          fi
+        if [[ "$(jq --argjson a "$localIndex" --argjson b "$remoteIndex" '$a == $b' <<< '{}')" == "true" ]]; then
+          echo "[${index}] - No Update Required"
+          continue
         fi
+
+        echo "[${index}] - Local and Remote do not match, updating remote to reflect git"
+
+        jsonUpdate=$(echo '{}' | jq '.')
+
+        for indexVar in $(echo "$localIndex" | jq 'del(.name) | del(.datatype)' | jq -r 'keys[]'); do
+          localIndexVar=$(echo "$localIndex" | jq -r ".${indexVar}")
+          remoteIndexVar=$(echo "$remoteIndex" | jq -r ".${indexVar}")
+
+          if [[ "$localIndexVar" != "$remoteIndexVar" ]]; then
+            echo "[${index}] - ${indexVar}: ${remoteIndexVar} -> ${localIndexVar}"
+
+            if [[ "$localIndexVar" =~ ^[0-9]+$ ]]; then
+              jsonUpdate=$(echo "$jsonUpdate" | jq --arg key "$indexVar" --argjson val "$localIndexVar" '. + {($key): $val}')
+            else
+              jsonUpdate=$(echo "$jsonUpdate" | jq --arg key "$indexVar" --arg val "$localIndexVar" '. + {($key): $val}')
+            fi
+          fi
+        done
+
+        echo "PATCH payload for ${index}: $jsonUpdate"
+
+        curl -X PATCH "https://${{ secrets.acs }}/${{ secrets.stack }}/adminconfig/v2/indexes/${index}" \
+          --header "Authorization: Bearer ${{ secrets.stack_jwt }}" \
+          --header "Content-Type: application/json" \
+          --data "$jsonUpdate"
+
+        echo "Update complete for ${index}"
       done
-
-      echo "PATCH payload for $indexName: $jsonUpdate"
-
-      curl -X PATCH "https://${{ secrets.acs }}/${{ secrets.stack }}/adminconfig/v2/indexes/${indexName}" \
-        --header "Authorization: Bearer ${{ secrets.stack_jwt }}" \
-        --header "Content-Type: application/json" \
-        --data "$jsonUpdate"
-
-      echo "Update complete for ${indexName}"
-    }
+    done
