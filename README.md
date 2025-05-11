@@ -6,28 +6,36 @@
 
     for file in $(ls); do
       echo "Processing file: ${file}"
-      total=$(jq length "${file}")
+
+      # Check if file is a JSON array
+      isArray=$(jq 'if type=="array" then true else false end' "$file")
+      if [[ "$isArray" != "true" ]]; then
+        echo "Skipping file: $file — not a valid JSON array"
+        continue
+      fi
+
+      total=$(jq length "$file")
+      echo "Found $total indexes in $file"
 
       for ((i = 0; i < total; i++)); do
-        localIndex=$(jq ".[$i]" "${file}")
-        indexName=$(echo "${localIndex}" | jq -r '.name')
-        echo "Checking index: ${indexName}"
+        localIndex=$(jq ".[$i]" "$file")
+        indexName=$(echo "$localIndex" | jq -r '.name')
+        echo "Checking index: $indexName"
 
-        remoteIndex=$(jq --sort-keys '.[] | select(.name=="'${indexName}'")' /tmp/currentIndexConfiguration.json)
+        remoteIndex=$(jq --sort-keys '.[] | select(.name=="'"$indexName"'")' /tmp/currentIndexConfiguration.json)
 
-        if [[ "$(jq --argjson a "${localIndex}" --argjson b "${remoteIndex}" '$a == $b' <<< '{}')" == "true" ]]; then
+        isSame=$(jq --argjson a "$localIndex" --argjson b "$remoteIndex" '$a == $b')
+        if [[ "$isSame" == "true" ]]; then
           echo "[${indexName}] - No update required"
           continue
         fi
 
-        echo "[${indexName}] - Local and Remote do not match, updating remote"
-
+        echo "[${indexName}] - Will be updated"
         jsonUpdate=$(echo '{}' | jq '.')
 
-        for field in $(echo "${localIndex}" | jq 'del(.name) | del(.datatype)' | jq -r 'keys[]'); do
-          localVal=$(echo "${localIndex}" | jq -r ".${field}")
-          remoteVal=$(echo "${remoteIndex}" | jq -r ".${field}")
-
+        for field in $(echo "$localIndex" | jq 'del(.name) | del(.datatype)' | jq -r 'keys[]'); do
+          localVal=$(echo "$localIndex" | jq -r ".${field}")
+          remoteVal=$(echo "$remoteIndex" | jq -r ".${field}")
           if [[ "$localVal" != "$remoteVal" ]]; then
             echo " - Field ${field}: ${remoteVal} -> ${localVal}"
             if [[ "$localVal" =~ ^[0-9]+$ ]]; then
@@ -38,7 +46,7 @@
           fi
         done
 
-        echo "PATCH payload for ${indexName}: $jsonUpdate"
+        echo "PATCH payload for $indexName: $jsonUpdate"
 
         curl -X PATCH "https://${{ secrets.acs }}/${{ secrets.stack }}/adminconfig/v2/indexes/${indexName}" \
           --header "Authorization: Bearer ${{ secrets.stack_jwt }}" \
