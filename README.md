@@ -1,51 +1,156 @@
-- name: Update Existing Indexes
-  if: ${{ inputs.select_action == 'update_indexes' }}
-  run: |
-    echo "Start: Updating indexes"
-    cd $GITHUB_WORKSPACE/indexes
+name: Component Validation
 
-    for jsonFile in *.json; do
-      echo "Processing file: ${jsonFile}"
-      totalIndexes=$(jq length "$jsonFile")
-      
-      for i in $(seq 0 $(($totalIndexes - 1))); do
-        localIndex=$(jq --sort-keys ".[$i]" "$jsonFile")
-        index=$(echo "$localIndex" | jq -r '.name')
-        echo "[${index}] - Evaluating..."
+on:
+  workflow_call:
+    inputs:
+      component:
+        required: true
+        type: string
 
-        remoteIndex=$(jq --sort-keys ".[] | select(.name==\"${index}\")" /tmp/currentIndexConfiguration.json)
+env:
+  json_schema: https://admin.splunk.com/service/info/specs/v2/openapi.json
 
-        if [[ "$(jq --argjson a "$localIndex" --argjson b "$remoteIndex" '$a == $b' <<< '{}')" == "true" ]]; then
-          echo "[${index}] - No Update Required"
-          continue
-        fi
+jobs:
+  gather_changed_indexes:
+    if: ${{ inputs.component == 'indexes' }}
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Install jq
+        run: sudo apt install -y jq
 
-        echo "[${index}] - Local and Remote do not match, updating remote to reflect git"
+      - name: Checkout Code
+        uses: actions/checkout@v3
 
-        jsonUpdate=$(echo '{}' | jq '.')
+      - name: Detect Changed Index Files
+        id: changed-files
+        uses: tj-actions/changed-files@v35
+        with:
+          json: true
+          quotepath: false
+          files: |
+            indexes/*.json
 
-        for indexVar in $(echo "$localIndex" | jq 'del(.name) | del(.datatype)' | jq -r 'keys[]'); do
-          localIndexVar=$(echo "$localIndex" | jq -r ".${indexVar}")
-          remoteIndexVar=$(echo "$remoteIndex" | jq -r ".${indexVar}")
+      - name: Extract Individual Indexes From Multi-Index JSON Files
+        if: steps.changed-files.outputs.any_changed == 'true'
+        id: extract-indexes
+        run: |
+          mkdir -p parsed_indexes
+          > parsed_index_list.txt
 
-          if [[ "$localIndexVar" != "$remoteIndexVar" ]]; then
-            echo "[${index}] - ${indexVar}: ${remoteIndexVar} -> ${localIndexVar}"
+          for jsonFile in $(ls indexes/*.json); do
+            echo "Parsing file: $jsonFile"
+            jq -c '.[]' "$jsonFile" | nl -nln > temp_index_list.txt
 
-            if [[ "$localIndexVar" =~ ^[0-9]+$ ]]; then
-              jsonUpdate=$(echo "$jsonUpdate" | jq --arg key "$indexVar" --argjson val "$localIndexVar" '. + {($key): $val}')
-            else
-              jsonUpdate=$(echo "$jsonUpdate" | jq --arg key "$indexVar" --arg val "$localIndexVar" '. + {($key): $val}')
-            fi
+            while read -r line; do
+              indexNum=$(echo "$line" | awk '{print $1}')
+              indexDef=$(echo "$line" | cut -f2-)
+              indexPath="parsed_indexes/index_${indexNum}_$(basename $jsonFile)"
+              echo "$indexDef" > "$indexPath"
+              echo "$indexPath" >> parsed_index_list.txt
+            done < temp_index_list.txt
+          done
+
+      - name: Set Output Matrix
+        id: set-matrix
+        run: |
+          indexes=$(jq -R -s -c 'split("\n") | map(select(. != ""))' parsed_index_list.txt)
+          echo "matrix={\"index\":${indexes}}" >> "$GITHUB_OUTPUT"
+
+  validate_changed_indexes:
+    if: ${{ needs.gather_changed_indexes.outputs.matrix != '[]' && needs.gather_changed_indexes.outputs.matrix != '' }}
+    needs: gather_changed_indexes
+    strategy:
+      matrix: ${{ fromJSON(needs.gather_changed_indexes.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Download OpenAPI Schema
+        id: prepare-schema
+        run: |
+          curl -s -o /tmp/openapi.json ${{ env.json_schema }}
+
+      - name: Validate JSON Schema
+        uses: docker://orrosenblatt/validate-json-action:latest
+        env:
+          INPUT_SCHEMA: /tmp/openapi.json
+          INPUT_JSONS: ${{ matrix.index }}
+
+      - name: Validate Index Does Not Start with Underscore
+        run: |
+          if [[ $(cat ${{ matrix.index }} | jq -r '.name' | grep "^_") ]]; then
+            echo "[ERROR] - Index name starts with underscore"
+            exit 1
           fi
-        done
 
-        echo "PATCH payload for ${index}: $jsonUpdate"
+      - name: Validate Index Name Characters
+        run: |
+          if [[ ! $(cat ${{ matrix.index }} | jq -r '.name' | grep -E "^[A-Za-z0-9._-]+$") ]]; then
+            echo "[ERROR] - Invalid characters in index name"
+            exit 1
+          fi
 
-        curl -X PATCH "https://${{ secrets.acs }}/${{ secrets.stack }}/adminconfig/v2/indexes/${index}" \
-          --header "Authorization: Bearer ${{ secrets.stack_jwt }}" \
-          --header "Content-Type: application/json" \
-          --data "$jsonUpdate"
 
-        echo "Update complete for ${index}"
-      done
-    done
+
+
+
+
+name: Manage Indexes
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Select Splunk Environment
+        required: true
+        default: branch_testing
+        type: choice
+        options:
+          - branch_testing
+          - branch_apply
+      select_action:
+        description: Select action
+        required: true
+        default: add
+        type: choice
+        options:
+          - add_indexes
+          - update_indexes
+
+jobs:
+  validate_indexes_component:
+    uses: ./.github/workflows/splunkcloud-component-validation.yaml
+    with:
+      component: indexes
+
+  ManageIndexes:
+    needs: validate_indexes_component
+    runs-on: ubuntu-latest
+    env:
+      stack: ${{ secrets.SPLUNK_STACK }}
+      stack_jwt: ${{ secrets.SPLUNK_TOKEN }}
+      acs: ${{ secrets.SPLUNK_URL }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Perform Splunk list action
+        run: |
+          API_PATH="/adminconfig/v2/indexes"
+          curl "https://${acs}/${stack}${API_PATH}" \
+            --header "Authorization: Bearer ${stack_jwt}" \
+            -o /tmp/currentIndexConfiguration.json
+
+      - name: Upload Current Index Configuration
+        uses: actions/upload-artifact@v4
+        with:
+          name: currentIndexConfiguration.json
+          path: /tmp/currentIndexConfiguration.json
+          retention-days: 5
+
+      # KEEP ALL EXISTING INDEX LOGIC UNCHANGED HERE
+      # Including parsing, creation, update, and status checks
