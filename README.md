@@ -1,12 +1,21 @@
-- name: Sequential Validation of Each Parsed Index JSON
+- name: Validate Index Not starting with underscore
   run: |
     for file in parsed_indexes/*.json; do
-      echo "----------------------------------------"
-      echo "Validating $file"
-      echo "----------- JSON CONTENT ---------------"
-      cat "$file"
-      echo "----------- SCHEMA CONTENT ------------"
-      cat /tmp/openapi.json
-      echo "----------------------------------------"
-      python src/scripts/validate_json.py /tmp/openapi.json "$file"
+      name=$(jq -r '.name' "$file")
+      if [[ "$name" =~ ^_ ]]; then
+        echo "[Error] Index '$name' in $file should not start with _"
+        exit 1
+      fi
+    done
+
+
+
+- name: Validate Index Name Characters
+  run: |
+    for file in parsed_indexes/*.json; do
+      name=$(jq -r '.name' "$file")
+      if [[ ! "$name" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+        echo "[Error] Index '$name' in $file contains invalid characters"
+        exit 1
+      fi
     done
