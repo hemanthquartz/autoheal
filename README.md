@@ -14,7 +14,6 @@ on:
       select_action:
         description: 'Select action'
         required: true
-        default: add
         type: choice
         options:
           - add_indexes
@@ -29,7 +28,7 @@ env:
 
 jobs:
   validate_and_manage_indexes:
-    runs-on: uhg-runner
+    runs-on: ubuntu-latest
     env:
       stack: ${{ secrets.SPLUNK_STACK }}
       stack_jwt: ${{ secrets.SPLUNK_TOKEN }}
@@ -45,7 +44,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Download Current Splunk Index Config & Schema
+      - name: Download Current Index Configuration and Schema
         run: |
           curl "${acs}/${stack}/adminconfig/v2/indexes" \
             --header "Authorization: Bearer ${stack_jwt}" \
@@ -68,15 +67,34 @@ jobs:
             done < temp_index_list.txt
           done
 
-      - name: Validate Each Index JSON Against Schema
+      - name: Gather Changed Indexes
+        id: gather_changed
+        uses: tj-actions/changed-files@v35
+        with:
+          json: true
+          quotepaths: false
+          files: |
+            parsed_indexes/*.json
+
+      - name: Filter Only Changed Index Files
+        id: filter_indexes
+        if: steps.gather_changed.outputs.any_changed == 'true'
         run: |
-          for file in parsed_indexes/*.json; do
+          matrix=$(jq -n --argjson files "${{ steps.gather_changed.outputs.all_changed_files }}" '$files')
+          echo "matrix=${matrix}" >> $GITHUB_OUTPUT
+
+      - name: Validate Changed Indexes
+        if: steps.gather_changed.outputs.any_changed == 'true'
+        run: |
+          for file in ${{ join(fromJSON(steps.filter_indexes.outputs.matrix), ' ') }}; do
+            echo "Validating $file"
             python src/scripts/validate_json.py /tmp/openapi.json "$file"
           done
 
-      - name: Validate Index Naming Rules
+      - name: Validate Naming Rules
+        if: steps.gather_changed.outputs.any_changed == 'true'
         run: |
-          for file in parsed_indexes/*.json; do
+          for file in ${{ join(fromJSON(steps.filter_indexes.outputs.matrix), ' ') }}; do
             name=$(jq -r '.name' "$file")
             if [[ "$name" =~ ^_ ]]; then
               echo "[Error] Index '$name' in $file should not start with _"
@@ -88,55 +106,45 @@ jobs:
             fi
           done
 
-      - name: Create New Indexes
-        if: ${{ inputs.select_action == 'add_indexes' }}
+      - name: Create or Update Changed Indexes
+        if: steps.gather_changed.outputs.any_changed == 'true'
         run: |
-          echo "Creating new indexes..."
-          cloudList=$(jq -r '.[].name' /tmp/currentIndexConfiguration.json)
-          for indexFile in parsed_indexes/*.json; do
-            index=$(jq -r '.name' "$indexFile")
-            if [[ ! "${cloudList}" =~ "${index}" ]]; then
+          for file in ${{ join(fromJSON(steps.filter_indexes.outputs.matrix), ' ') }}; do
+            index=$(jq -r '.name' "$file")
+            existing=$(jq -c --arg index "$index" '.[] | select(.name==$index)' /tmp/currentIndexConfiguration.json)
+
+            if [[ -z "$existing" ]]; then
+              echo "Creating new index: $index"
               curl -X POST "${acs}/${stack}/adminconfig/v2/indexes" \
                 --header "Authorization: Bearer ${stack_jwt}" \
                 --header "Content-Type: application/json" \
-                --data @"$indexFile"
-              sleep 5
-              echo "Created: $index"
+                --data @"$file"
             else
-              echo "[Index exists] Skipping $index"
-            fi
-          done
+              echo "Evaluating update for $index"
+              localVal=$(cat "$file")
+              isSame=$(jq --argjson a "$existing" --argjson b "$localVal" '$a == $b' <<< '{}')
 
-      - name: Update Existing Indexes
-        if: ${{ inputs.select_action == 'update_indexes' }}
-        run: |
-          echo "Updating indexes..."
-          for indexFile in parsed_indexes/*.json; do
-            localIndex=$(cat "$indexFile")
-            index=$(echo "$localIndex" | jq -r '.name')
-            remoteIndex=$(jq -c --arg name "$index" '.[] | select(.name==$name)' /tmp/currentIndexConfiguration.json)
-            if [[ "$(jq --argjson a "$remoteIndex" --argjson b "$localIndex" '$a == $b' <<< '{}')" == "true" ]]; then
-              echo "[$index] No update required"
-              continue
-            fi
+              if [[ "$isSame" == "true" ]]; then
+                echo "[$index] No update required"
+              else
+                echo "Updating index: $index"
+                patch=$(echo '{}' | jq '.')
+                for key in $(jq -r 'keys[]' "$file"); do
+                  newVal=$(jq -r ".${key}" "$file")
+                  oldVal=$(echo "$existing" | jq -r ".${key}")
+                  if [[ "$newVal" != "$oldVal" ]]; then
+                    if [[ "$newVal" =~ ^[0-9]+$ ]]; then
+                      patch=$(echo "$patch" | jq --arg key "$key" --argjson val "$newVal" '. + {($key): $val}')
+                    else
+                      patch=$(echo "$patch" | jq --arg key "$key" --arg val "$newVal" '. + {($key): $val}')
+                    fi
+                  fi
+                done
 
-            echo "[$index] Updating to reflect Git"
-            jsonUpdate=$(echo '{}' | jq '.')
-            for indexVar in $(echo "$localIndex" | jq 'del(.name) | del(.datatype)' | jq -r 'keys[]'); do
-              localVal=$(echo "$localIndex" | jq -r ".${indexVar}")
-              remoteVal=$(echo "$remoteIndex" | jq -r ".${indexVar}")
-              if [[ "$localVal" != "$remoteVal" ]]; then
-                if [[ "$localVal" =~ ^[0-9]+$ ]]; then
-                  jsonUpdate=$(echo "$jsonUpdate" | jq --arg key "$indexVar" --argjson val "$localVal" '. + {($key): $val}')
-                else
-                  jsonUpdate=$(echo "$jsonUpdate" | jq --arg key "$indexVar" --arg val "$localVal" '. + {($key): $val}')
-                fi
+                curl -X PATCH "${acs}/${stack}/adminconfig/v2/indexes/${index}" \
+                  --header "Authorization: Bearer ${stack_jwt}" \
+                  --header "Content-Type: application/json" \
+                  --data "$patch"
               fi
-            done
-
-            curl -X PATCH "${acs}/${stack}/adminconfig/v2/indexes/${index}" \
-              --header "Authorization: Bearer ${stack_jwt}" \
-              --header "Content-Type: application/json" \
-              --data "$jsonUpdate"
-            echo "[$index] Update complete"
+            fi
           done
