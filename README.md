@@ -1,26 +1,31 @@
-      - name: Filter Parsed Indexes Against Splunk Cloud Config
+      - name: Compare extracted indexes with Splunk Cloud and filter only new/changed
         run: |
-          mkdir -p filtered_indexes
-
+          mkdir -p changed_indexes
           for file in parsed_indexes/*.json; do
             index_name=$(jq -r '.name' "$file")
-            remote_index=$(jq -c --arg name "$index_name" '.[] | select(.name == $name)' /tmp/currentIndexConfiguration.json)
-
-            if [[ -z "$remote_index" ]]; then
-              echo "[New] $index_name -> adding for create"
-              cp "$file" filtered_indexes/
+            # Check if index exists in cloud
+            existing=$(jq -c --arg name "$index_name" '.[] | select(.name == $name)' /tmp/currentIndexConfiguration.json)
+            if [[ -z "$existing" ]]; then
+              echo "New index detected: $index_name"
+              cp "$file" changed_indexes/
             else
-              is_same=$(jq --argjson a "$remote_index" --argjson b "$(cat "$file")" '$a == $b' <<< '{}')
-              if [[ "$is_same" != "true" ]]; then
-                echo "[Updated] $index_name -> adding for update"
-                cp "$file" filtered_indexes/
+              local_def=$(jq -cS . "$file")
+              remote_def=$(echo "$existing" | jq -cS .)
+              if [[ "$local_def" != "$remote_def" ]]; then
+                echo "Index $index_name changed"
+                cp "$file" changed_indexes/
               else
-                echo "[Unchanged] $index_name -> skipping"
+                echo "Index $index_name unchanged. Skipping."
               fi
             fi
           done
 
-      - name: Replace parsed_indexes with filtered indexes
+      - name: Override parsed_indexes with only new/updated ones
         run: |
-          mv parsed_indexes parsed_indexes_all
-          mv filtered_indexes parsed_indexes
+          if [ "$(ls -A changed_indexes)" ]; then
+            rm -rf parsed_indexes
+            mv changed_indexes parsed_indexes
+          else
+            echo "No new or changed indexes detected. All further steps will be skipped."
+            mkdir -p parsed_indexes  # To prevent loop errors if dir doesn't exist
+          fi
