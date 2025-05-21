@@ -1,27 +1,28 @@
-Based on the meeting transcript, the key challenges in the sales domain include:
+Based on the meeting transcript, the key challenges for the finance domain include:
 
-1. Data Dependency Delays
-- Jobs frequently get delayed due to upstream master table processing not completing on time
-- This prevents timely delivery of data to target audiences
+1. Complex Data Migration
+- Multiple data sources (bread financials, MFS database, PMID)
+- Data currently spread across Hadoop, Teradata, and AWS data lake
+- Need to consolidate and migrate data to cloud platforms
 
-2. Hadoop Infrastructure Limitations
-- Long-running jobs consume significant memory resources
-- Limited scalability of the 51-node Hadoop cluster
-- In-memory joins cause performance bottlenecks
+2. Data Integration Complexity
+- Different ingestion methods (SFTP, Atunity Click)
+- Multiple products within financial domain (credit cards, PMID, potential BofA files)
+- Ensuring data integrity during migration
 
-3. Legacy Job Performance
-- Older jobs (4-5 years old) have inefficient designs
-- Some jobs run for multiple hours
-- Newer redesigned jobs are more efficient, running in just a few minutes
+3. Reporting and Usage Uncertainty
+- Unclear current usage of data in Hadoop
+- Need to understand reporting requirements before migration
+- Potential upcoming 2025 initiative for bread financials reporting
 
-4. Data Acquisition Challenges
-- Currently maintaining some acquisition jobs independently
-- Need to find equivalent tables from original data owners
-- Requires redesigning existing jobs to use enterprise tables
+4. Technical Transition
+- Planned decommissioning of Hadoop and Teradata
+- Selecting appropriate cloud migration tools (Click vs DMS)
+- Maintaining near real-time data capture during transition
 
-5. Data Quality and Join Optimization
-- Some joins are not optimized correctly
-- Data issues need to be fixed within the same script
-- Complex joins consume significant computational resources
+5. Ownership and Coordination
+- Multiple teams involved (renders team, current support team)
+- Need for clear communication and handover between teams
+- Ensuring comprehensive understanding of current data landscape
 
-These challenges primarily stem from legacy infrastructure, data dependency complexities, and the need for ongoing job optimization and redesign.
+These challenges require careful planning, stakeholder collaboration, and a detailed migration strategy.
