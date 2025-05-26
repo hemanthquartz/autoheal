@@ -1,3 +1,18 @@
-For a dataset of 150 TB, Teradata Parallel Transporter (TPT) is generally the preferred choice due to its high-performance capabilities and efficient handling of large data volumes. TPT’s ability to directly export data to Amazon S3 without intermediate storage can significantly reduce migration time and complexity.
+Here are the key points of improvement for the technical architecture, with direct quotes:
 
-However, if your migration also involves schema conversion or you’re moving to a different database system within AWS, incorporating AWS Schema Conversion Tool (SCT) can be beneficial. In such cases, a hybrid approach using TPT for data extraction and SCT for schema conversion might offer the best of both worlds.![diagram-export-5-26-2025-12_35_05-AM](https://github.com/user-attachments/assets/c278bfff-ede8-4180-8749-a72598b0acdb)
+1. Job Performance Optimization
+Quote: "Some of the joints that we have... are not optimized correctly. And, you know, it consumes quite a lot of resources on Hadoop. And sometimes there are job failures to do that."
+
+2. Dependency Management and Data Timeliness
+Quote: "The timing of, you know, the data that we get from the other tables, usually we run into delays in the jobs because something upstream did not, you know, got built."
+
+3. Eliminate Redundant Data Acquisition
+Quote: "We need to find an equivalent table from the actual team who owns it and replace it. So that is one of the, you know, the key gaps that we have is that we are creating our own acquisitions and data lake at base jobs."
+
+4. Limited Scalability of Current Infrastructure
+Quote: "Hadoop is built on 51 nodes right now... it's still a fixed memory, right? So it's not, we cannot be scaled, you know, as we can do it in cloud."
+
+5. Legacy Job Modernization
+Quote: "Some of the older jobs that we have we support, which we didn't have time to redesign. That's where, you know, some of these issues are there."
+
+These points provide a comprehensive view of potential improvements in the sales domain's technical architecture.
