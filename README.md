@@ -1,32 +1,32 @@
-- name: Delete Orphaned Indexes from Splunk Cloud
-  if: always()
-  run: |
-    echo "Fetching local index names from parsed files..."
-    localIndexes=""
-    for file in parsed_indexes/*; do
-      index=$(jq -r '.name' "$file")
-      localIndexes="$localIndexes $index"
-    done
+echo "Start: Creating new indexes"
+indexlist=""
 
-    echo "Local indexes: $localIndexes"
+# Build a list of all index names from parsed index files
+for file in parsed_indexes/*; do
+  index=$(jq -r '.name' "$file")
+  echo "Found index: $index from file: $file"
+  indexlist="$indexlist $index"
+done
 
-    echo "Fetching current indexes from Splunk Cloud..."
-    cloudIndexes=$(jq -r '.[].name' /tmp/currentIndexConfiguration.json)
+echo "Reading existing indexes from stack..."
+cloudList=$(jq -r '.[].name' /tmp/currentIndexConfiguration.json)
+echo "Fetched cloud index list"
 
-    echo "Comparing and deleting orphaned indexes..."
-    for cloudIndex in $cloudIndexes; do
-      found=false
-      for localIndex in $localIndexes; do
-        if [[ "$cloudIndex" == "$localIndex" ]]; then
-          found=true
-          break
-        fi
-      done
-      if [[ "$found" == false ]]; then
-        echo "Deleting orphaned index: $cloudIndex"
-        curl -X DELETE "https://${acs}/${stack}/adminconfig/v2/indexes/${cloudIndex}" \
-          --header "Authorization: Bearer ${stack_jwt}" \
-          --header "Content-Type: application/json"
-        echo "Deleted index: $cloudIndex"
-      fi
-    done
+# Now safely iterate over actual index names
+for index in $indexlist; do
+  echo "Checking if index $index exists in cloud..."
+  if [[ $(echo "$cloudList" | jq -r --arg name "$index" '. | index($name)') == "null" ]]; then
+    echo "[Creating Index] : $index"
+    echo "Sending curl POST for $index"
+
+    curl -X POST "https://${acs}/${stack}/adminconfig/v2/indexes" \
+      --header "Authorization: Bearer ${stack_jwt}" \
+      --header "Content-Type: application/json" \
+      --data "@parsed_indexes/${index}.json"
+
+    echo "POST complete"
+    sleep 5
+  else
+    echo "[Index exists] skipping $index"
+  fi
+done
