@@ -1,25 +1,39 @@
-response=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH "https://${acs}/${stack}/adminconfig/v2/indexes/${index}" \
-  --header "Authorization: Bearer ${stack_jwt}" \
-  --header "Content-Type: application/json" \
-  --data "$jsonUpdate")
+Here are the detailed minutes of the Data Migration Strategy Meeting:
 
-if [[ "$response" -eq 400 ]]; then
-  echo "Skipped updating $index: invalid payload."
-  continue
-fi
+Meeting Title: Data Migration Strategy Meeting
 
-echo "Update complete for ${index}"
+Key Discussion Points:
+1. Encryption Zone and Key Management
+- Need to create an encryption zone on AWS similar to current Hadoop setup
+- Use Luna HSM for encryption key management
+- Integrate Luna HSM with AWS customer-managed keys
+- Secure data access using potential Lake Formation implementation
 
+2. Teradata Migration Strategy
+- Modernizing legacy system (over 20 years old)
+- Separate processes for AWS and Snowflake
+- Focus on Power insurance application data mart migration
+- Current data source: Mainframe using Click Replica tool
+- Migration timeline: October-November
 
+3. Data Migration Technical Considerations
+- Use AWS Schema Conversion Tool (SCT) for data extraction
+- Estimated source data volume: 10 terabytes
+- Potential use of services like AWS Glue, DMS, Lambda
+- Maintain existing data ingestion tools (Click Replica)
 
-response=$(curl -s -o /dev/null -w "%{http_code}" -X POST "https://${acs}/${stack}/adminconfig/v2/indexes" \
-  --header "Authorization: Bearer ${stack_jwt}" \
-  --header "Content-Type: application/json" \
-  --data "@parsed_indexes/${index}.json")
+4. Key Action Items
+- Test AWS Schema Conversion Tool
+- Investigate Luna HSM integration with AWS
+- Explore Lake Formation for data security
+- Attend Power application planning meeting
+- Contact technology team for HSM credentials
 
-if [[ "$response" -eq 400 ]]; then
-  echo "Skipped creating $index: invalid payload."
-  continue
-fi
+5. Contact Information
+- Technology Team Product Owner: Tharn Lee
+- Program Manager for Migration: VEDA
+- JIRA Board: DDT Backlog under DNA Tech Enablement
 
-echo "Created index: $index"
+Participants: Mahesh (Speaker 2), Speaker 1 (AWS Expert)
+
+Next Steps: Continued collaboration on migration strategy and technical implementation.
