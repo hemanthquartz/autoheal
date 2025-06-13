@@ -1,69 +1,104 @@
-Here are the Jira stories written in a professional and structured format:
+name: Component Validation
 
-⸻
+on:
+  pull_request:
+    branches:
+      - main
 
-🔹 Story 1: Create Common Lambda Layers for Shared Interface Utilities
+permissions:
+  contents: read
+  id-token: write
 
-Summary:
-Create reusable Lambda Layers for the following utilities: db_thin_client, db_thick_client, lxml, and wranglers, to be used across all portfolios.
+jobs:
+  validate_components:
+    runs-on: ubuntu-latest
+    outputs:
+      indexes-changed: ${{ steps.detect.outputs.indexes_changed }}
+      hec-changed: ${{ steps.detect.outputs.hec_changed }}
+      apps-changed: ${{ steps.detect.outputs.apps_changed }}
+      ip-allowlist-changed: ${{ steps.detect.outputs.ip_allowlist_changed }}
 
-Description:
-	•	Package each utility into a standalone ZIP file as an independent Lambda Layer.
-	•	Ensure all layers are compatible with Python 3.12 runtime.
-	•	Create a dedicated CloudFormation template for each layer.
-	•	Export each layer as a resource that can be imported by other stacks (e.g., using Export and Fn::ImportValue).
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-Acceptance Criteria:
-	•	Four Lambda Layer ZIPs are created and validated.
-	•	Corresponding CFTs are available for deployment.
-	•	Each layer exports a resource name compatible with multi-stack usage.
-	•	Layers work without issues in Python 3.12 Lambdas.
+      - name: Detect Changed Files
+        id: detect
+        run: |
+          git fetch origin main
+          git diff --name-only origin/main...HEAD > changed_files.txt
+          cat changed_files.txt
 
-Story Points: 2
-Labels: lambda, shared-layer, cloudformation, python3.12
+          indexes_changed=false
+          hec_changed=false
+          apps_changed=false
+          ip_allowlist_changed=false
 
-⸻
+          while read file; do
+            if [[ "$file" == src/indexes/* ]]; then
+              indexes_changed=true
+            elif [[ "$file" == src/hec/* ]]; then
+              hec_changed=true
+            elif [[ "$file" == src/apps/* ]]; then
+              apps_changed=true
+            elif [[ "$file" == src/ip-allow-list/* ]]; then
+              ip_allowlist_changed=true
+            fi
+          done < changed_files.txt
 
-🔹 Story 2: Modify CFTs to Use New Common Lambda Layers and Upgrade to Python 3.12
+          echo "indexes_changed=$indexes_changed" >> $GITHUB_OUTPUT
+          echo "hec_changed=$hec_changed" >> $GITHUB_OUTPUT
+          echo "apps_changed=$apps_changed" >> $GITHUB_OUTPUT
+          echo "ip_allowlist_changed=$ip_allowlist_changed" >> $GITHUB_OUTPUT
 
-Summary:
-Update existing CloudFormation templates to use newly created common layers and upgrade Lambda runtime to Python 3.12.
+  validate_indexes:
+    needs: validate_components
+    if: needs.validate_components.outputs.indexes-changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
 
-Description:
-	•	Identify all Lambda functions currently using separate layer definitions for db_thin_client, db_thick_client, lxml, and wranglers.
-	•	Modify CFTs to use Fn::ImportValue and reference the new shared layers.
-	•	Upgrade the runtime of each Lambda to Python 3.12 in its template.
+      - name: Run Index Validation
+        run: |
+          echo "Running index validation..."
+          # Add index validation logic here
 
-Acceptance Criteria:
-	•	All references to legacy layers replaced with references to shared layers.
-	•	All Lambdas updated to use python3.12.
-	•	Templates successfully validated and deployed in dev/test environments.
+  validate_hec:
+    needs: validate_components
+    if: needs.validate_components.outputs.hec-changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
 
-Story Points: 2
-Labels: lambda, python3.12, layer-update, cloudformation
+      - name: Run HEC Validation
+        run: |
+          echo "Running HEC validation..."
+          # Add HEC validation logic here
 
-⸻
+  validate_apps:
+    needs: validate_components
+    if: needs.validate_components.outputs.apps-changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
 
-🔹 Story 3: Functional Testing of Modified Lambdas Post Migration
+      - name: Run App Validation
+        run: |
+          echo "Running App validation..."
+          # Add App validation logic here
 
-Summary:
-Perform regression testing on all modified Lambda functions after applying the new shared layers and upgrading the Python version.
+  validate_ip_allowlist:
+    needs: validate_components
+    if: needs.validate_components.outputs.ip-allowlist-changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
 
-Description:
-	•	Validate functionality and correctness of each Lambda function updated in the previous story.
-	•	Confirm successful execution paths and logging behavior.
-	•	Check compatibility and output integrity where the shared layer utilities are used.
-	•	Capture issues and coordinate with dev teams if needed.
-
-Acceptance Criteria:
-	•	All Lambdas confirmed working correctly with the new layers and Python 3.12.
-	•	Errors (if any) triaged and fixed.
-	•	Logs validated in CloudWatch.
-	•	Approval sign-off from QA/stakeholders.
-
-Story Points: 5
-Labels: testing, qa, lambda, python3.12
-
-⸻
-
-Let me know if you’d like these exported to Jira markdown or Confluence-style format.
+      - name: Run IP Allowlist Validation
+        run: |
+          echo "Running IP allowlist validation..."
+          # Add IP allowlist validation logic here
