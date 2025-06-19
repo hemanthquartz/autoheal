@@ -1,37 +1,52 @@
 pipeline {
-    agent { label 'BDD-EC2' }
+    agent any
 
     environment {
-        AWS_REGION = 'us-east-1'              // Set your AWS Region
-        AWS_ACCOUNT_ID = '123456789012'       // Replace with your AWS account ID
-        REPO_NAME = 'your-repo-name'          // Update with your Git repo name
-        BRANCH = 'main'                       // Change if you want another branch
-        DEPLOY_DIR = 'deployment'             // Directory to deploy from (optional)
+        BRANCH_NAME = 'dev'
+        REPO_NAME = 'claims'
+        DEST_FOLDER = 'automation'
+        AWS_REGION = 'us-east-1'
+        S3_BUCKET = 'your-s3-bucket-name' // replace with real bucket
     }
 
     stages {
-
-        stage('Checkout Code') {
+        stage('Initialize') {
             steps {
-                git branch: "${BRANCH}",
-                    url: "ssh://git@bitbucket.fannieeae.com:7999/APP_CODE/${REPO_NAME}.git",
-                    credentialsId: 'git-ssh-key'
+                echo "Initialization..."
+                echo "Repository: https://github.com/ACE-DataAnalytics/${REPO_NAME}.git"
+                echo "Branch Name: ${BRANCH_NAME}"
+                echo "Destination Folder: ${DEST_FOLDER}"
             }
         }
 
-        stage('Deploy to AWS') {
+        stage('Checkout Code') {
+            steps {
+                git branch: "${BRANCH_NAME}",
+                    url: "https://github.com/ACE-DataAnalytics/${REPO_NAME}.git"
+            }
+        }
+
+        stage('Deploy to AWS (S3)') {
             steps {
                 withAWS(region: "${AWS_REGION}", credentials: 'aws-credentials-id') {
-                    // Example: Deploy a CloudFormation stack
-                    sh '''
-                    aws cloudformation deploy \
-                      --template-file ${DEPLOY_DIR}/template.yaml \
-                      --stack-name sample-stack \
-                      --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
-                      --parameter-overrides EnvName=dev
-                    '''
+                    sh """
+                    echo "Copying artifacts to S3..."
+                    aws s3 cp ${DEST_FOLDER}/ s3://${S3_BUCKET}/${REPO_NAME}/ --recursive
+                    """
                 }
             }
+        }
+    }
+
+    post {
+        always {
+            echo "Build complete"
+        }
+        success {
+            echo "Build and deploy completed successfully!"
+        }
+        failure {
+            echo "Build failed. Please check logs."
         }
     }
 }
