@@ -2,51 +2,21 @@ pipeline {
     agent any
 
     environment {
-        BRANCH_NAME = 'dev'
-        REPO_NAME = 'claims'
-        DEST_FOLDER = 'automation'
         AWS_REGION = 'us-east-1'
-        S3_BUCKET = 'your-s3-bucket-name' // replace with real bucket
+        S3_BUCKET  = 'your-s3-bucket'
     }
 
     stages {
-        stage('Initialize') {
+        stage('Deploy to S3') {
             steps {
-                echo "Initialization..."
-                echo "Repository: https://github.com/ACE-DataAnalytics/${REPO_NAME}.git"
-                echo "Branch Name: ${BRANCH_NAME}"
-                echo "Destination Folder: ${DEST_FOLDER}"
-            }
-        }
+                sh '''
+                    export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+                    export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+                    export AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
 
-        stage('Checkout Code') {
-            steps {
-                git branch: "${BRANCH_NAME}",
-                    url: "https://github.com/ACE-DataAnalytics/${REPO_NAME}.git"
+                    aws s3 cp ./automation/ s3://${S3_BUCKET}/ --recursive --region ${AWS_REGION}
+                '''
             }
-        }
-
-        stage('Deploy to AWS (S3)') {
-            steps {
-                withAWS(region: "${AWS_REGION}", credentials: 'aws-credentials-id') {
-                    sh """
-                    echo "Copying artifacts to S3..."
-                    aws s3 cp ${DEST_FOLDER}/ s3://${S3_BUCKET}/${REPO_NAME}/ --recursive
-                    """
-                }
-            }
-        }
-    }
-
-    post {
-        always {
-            echo "Build complete"
-        }
-        success {
-            echo "Build and deploy completed successfully!"
-        }
-        failure {
-            echo "Build failed. Please check logs."
         }
     }
 }
