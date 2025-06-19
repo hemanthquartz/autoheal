@@ -1,42 +1,37 @@
-Here's a detailed summary of suggestions to be added or modified in the document:
+pipeline {
+    agent { label 'BDD-EC2' }
 
-1. Compute Options Comparison
-- Add a detailed cost comparison between Glue, EMR, and other AWS compute services
-- Highlight that EMR can save 30-40% compared to Glue out of the box
-- Include pros and cons of each compute option
+    environment {
+        AWS_REGION = 'us-east-1'              // Set your AWS Region
+        AWS_ACCOUNT_ID = '123456789012'       // Replace with your AWS account ID
+        REPO_NAME = 'your-repo-name'          // Update with your Git repo name
+        BRANCH = 'main'                       // Change if you want another branch
+        DEPLOY_DIR = 'deployment'             // Directory to deploy from (optional)
+    }
 
-2. Data Ingestion Strategies
-- Explore Zero ETL for data ingestion where possible
-- Address Click continuity issues using control tables
-- Consider DMS as an alternative for data replication
-- Recommend solutions for handling data loss and truncate-load challenges
+    stages {
 
-3. Orchestration Options
-- Compare orchestration tools: Apache Airflow, Step Functions, Control M
-- Highlight benefits of Step Functions for AWS visualization
-- Recommend based on specific use case requirements
+        stage('Checkout Code') {
+            steps {
+                git branch: "${BRANCH}",
+                    url: "ssh://git@bitbucket.fannieeae.com:7999/APP_CODE/${REPO_NAME}.git",
+                    credentialsId: 'git-ssh-key'
+            }
+        }
 
-4. Unified Data Platform Approach
-- Propose a unified data platform solution (like Google Data Commons)
-- Emphasize benefits of integrated governance, scalability, and AI/ML capabilities
-- Discuss potential cost implications
-
-5. Strategic Recommendations
-- Create a three-bucket approach:
-  a) In-progress work
-  b) Immediate and important priorities
-  c) Future strategic initiatives
-- Develop a roadmap showing migration steps
-- Include a value chart demonstrating technical and business outcomes
-
-6. Additional Considerations
-- Address data governance challenges
-- Propose metadata-driven, source-agnostic solutions
-- Include frameworks for standardizing data integration
-
-7. Stakeholder Involvement
-- Recommend involving Sanjay in enterprise-wide discussions
-- Prepare for presentation to broader leadership team
-- Ensure solutions align with overall enterprise strategy
-
-These suggestions provide a comprehensive approach to addressing the client's data strategy and technology challenges.
+        stage('Deploy to AWS') {
+            steps {
+                withAWS(region: "${AWS_REGION}", credentials: 'aws-credentials-id') {
+                    // Example: Deploy a CloudFormation stack
+                    sh '''
+                    aws cloudformation deploy \
+                      --template-file ${DEPLOY_DIR}/template.yaml \
+                      --stack-name sample-stack \
+                      --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+                      --parameter-overrides EnvName=dev
+                    '''
+                }
+            }
+        }
+    }
+}
