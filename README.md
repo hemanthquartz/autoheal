@@ -1,79 +1,107 @@
-Here’s a minimized, streamlined version of the Step Function framework—while keeping it modular, reusable, and customizable for various pipeline patterns (batch, micro-batch, streaming, structured/unstructured).
+Here’s a streamlined Step Function workflow specifically tailored for Parquet file ingestion, using generic, reusable language while still allowing customization per pipeline.
 
 ⸻
 
-✅ 📦 Optimized Step Function Workflow (4 High-Level Stages)
+✅ 📦 Simplified & Reusable Step Function for Parquet Ingestion
 
-──────────────────────────────────────────────────────────────────────────
-  📥 1. Ingest & Validate Data              🔁 Reusable
-──────────────────────────────────────────────────────────────────────────
-  • Lambda: `validate_input.py`
-    - File format/schema check
-    - Optional: Cleansing/normalization
-    - Fail route → ErrorHandler + Notification
+────────────────────────────────────────────────────────────────────────
+📥 Step 1: Ingest & Validate Parquet File        🔁 Reusable
+────────────────────────────────────────────────────────────────────────
+• Trigger: S3 → Event triggers Step Function
+• Lambda: `validate_parquet.py`
+   - Validates:
+     • File type = `.parquet`
+     • Schema compliance (based on expected structure)
+     • Required columns present
+     • Partition structure (e.g., dt=2024-07-02/)
+   - Adds metadata (job_id, source, timestamp)
+   - Moves valid files to staging bucket/prefix
+   - On failure → route to [ErrorHandler + SNS Alert]
 
-  ✔ Input: S3 Event, DMS, Kinesis, AppFlow
-  ✔ Output: Validated data to staging (S3, Redshift)
+✔ Generic across all Parquet-based ingestion flows  
+✔ Configurable schema (stored in SSM or passed as input)
 
-──────────────────────────────────────────────────────────────────────────
-  ⚙️ 2. Process Data                        🔧 Customizable Logic
-──────────────────────────────────────────────────────────────────────────
-  • Choice State → Route to Logic:
-    - Lambda (e.g., `transform_lambda.py`)
-    - Glue PySpark (e.g., `transform_spark.py`)
-    - Glue SQL (e.g., `sql_logic.sql`)
+---
 
-  ✔ Transformation logic is code-based and swappable
-  ✔ Reusable routing logic
-  ✔ Can include built-in SCD, enrichment, key gen
+⚙️ Step 2: Transform Parquet Data                🔧 Customizable Logic
+────────────────────────────────────────────────────────────────────────
+• Choice State → Processor Type:
+   ├─ Lambda: `transform_lambda.py`  
+   ├─ Glue PySpark: `transform_spark.py`  
+   └─ Glue SQL: `sql_logic.sql`
 
-──────────────────────────────────────────────────────────────────────────
-  🔍 3. Validate Output                     🔁 Reusable
-──────────────────────────────────────────────────────────────────────────
-  • Lambda: `dq_check.py`
-    - Record count, null %, schema drift
-    - Optional: Custom DQ rules via config
-    - If fail → ErrorHandler → Alert
+• Generic Logic Examples:
+   - Column renaming or dropping
+   - Format conversion (Parquet → CSV, JSON if needed)
+   - Row-level transformations (e.g., type casting, enrichment)
+   - Apply SCD/Delta logic if configured
 
-  ✔ Works across all output types (S3, Redshift, Snowflake)
+✔ Processing engine determined dynamically  
+✔ Logic is modular, pluggable per pipeline  
 
-──────────────────────────────────────────────────────────────────────────
-  🚀 4. Publish & Notify                    🔁 Reusable
-──────────────────────────────────────────────────────────────────────────
-  • Lambda or Glue job:
-    - Load to curated zone (S3, Redshift, Snowflake)
-    - Metadata tagging, encryption, partitioning
+---
 
-  • Optional triggers:
-    - EventBridge → downstream
-    - SNS → Success/Failure notifications
+🔍 Step 3: Validate Transformed Output           🔁 Reusable
+────────────────────────────────────────────────────────────────────────
+• Lambda: `validate_output.py`
+   - Ensures:
+     • Row count > threshold
+     • Null checks on mandatory fields
+     • Partition path valid (e.g., dt/region)
+     • Output format = Parquet
+   - Optionally checks partition completeness (dt/hour combinations)
 
-──────────────────────────────────────────────────────────────────────────
+✔ Rules passed via input/config → reusable logic  
+✔ On validation failure → [ErrorHandler + Alert]
 
+---
 
-⸻
+🚀 Step 4: Load & Notify                          🔁 Reusable
+────────────────────────────────────────────────────────────────────────
+• Lambda or Glue: `load_and_notify.py`
+   - Loads output to:
+     • S3 curated zone (with standard layout & partitioning)
+     • Redshift/Snowflake (optional)
+   - Tags data with metadata (job ID, source, success status)
+   - Updates Glue Catalog (table name, partitions)
+   - Publishes success/failure status:
+     • SNS topic for alerts
+     • EventBridge for downstream triggers
 
-✅ Reusability Focus
-
-Stage	Reusable?	Notes
-Ingest & Validate	✅	Standard across pipelines
-Process Data	⚠️	Logic varies but routing reusable
-Validate Output	✅	Config-driven DQ checks
-Publish & Notify	✅	Shared notification + metadata logic
-
-
-⸻
-
-🔄 Example Pipeline Variants Supported by This Design
-
-Pipeline Type	Config Changes Only
-File ingestion + Lambda transform	✅
-Kinesis stream + Glue PySpark	✅
-AppFlow → S3 → Glue SQL	✅
-Batch DB → DMS → Redshift	✅
-Unstructured logs → S3 → Athena	✅
+✔ Works for all parquet ingestion pipelines  
+✔ Supports modular outputs and downstream pipelines
 
 
 ⸻
 
-Would you like a PowerPoint-ready visual of this version? I can include icons, layout boxes, and reusable symbols per step.
+🔄 What Makes This Pattern Reusable
+
+Component	Why It’s Reusable
+Input Validator	Works for any Parquet file with schema mapping as config
+Transform Step	Supports pluggable logic modules (e.g., apply UDFs, SQL, PySpark scripts)
+DQ Step	Driven by JSON-configured rules (row count, null %, partition completeness)
+Load Step	Handles standard destinations (S3, Redshift, Snowflake); metadata logic is generic
+
+
+⸻
+
+📌 Sample Config Input for Pipeline Execution
+
+{
+  "source_bucket": "my-landing-zone",
+  "target_bucket": "my-curated-zone",
+  "expected_schema": ["customer_id", "order_id", "amount", "dt"],
+  "required_partitions": ["dt", "region"],
+  "dq_rules": {
+    "min_rows": 1000,
+    "max_null_pct": 0.05,
+    "mandatory_columns": ["customer_id", "amount"]
+  },
+  "processor_type": "glue_pyspark",
+  "output_format": "parquet"
+}
+
+
+⸻
+
+Would you like this formatted as a PowerPoint flow or exported as a CloudFormation/Step Function JSON definition?
