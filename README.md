@@ -6,7 +6,6 @@
       index_name=$(jq -r '.name' "$file")
       echo "Checking index: $index_name"
 
-      # Pull matching index definition from cloud config
       existing=$(jq -c --arg name "$index_name" '.[] | select(.name == $name)' /tmp/currentIndexConfiguration.json)
 
       if [[ -z "$existing" ]]; then
@@ -15,7 +14,6 @@
         continue
       fi
 
-      # Normalize both local and remote (remove datatype, sort keys)
       local_def=$(jq -S 'del(.datatype)' "$file")
       remote_def=$(echo "$existing" | jq -S 'del(.datatype)')
 
