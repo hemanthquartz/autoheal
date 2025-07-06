@@ -1,26 +1,28 @@
-- name: Compare extracted indexes with Splunk Cloud and filter only new/changed
+- name: Perform Splunk list action
   run: |
-    mkdir -p changed_indexes
+    API_PATH="/adminconfig/v2/indexes"
+    AUTH_HEADER="Authorization: Bearer ${stack_jwt}"
+    BASE_URL="https://${acs}/${stack}${API_PATH}"
+    OUT_FILE="/tmp/currentIndexConfiguration.json"
 
-    for file in parsed_indexes/*.json; do
-      index_name=$(jq -r '.name' "$file")
-      echo "Checking index: $index_name"
+    echo "Fetching all indexes with pagination..."
+    > "$OUT_FILE"  # Clear file
 
-      existing=$(jq -c --arg name "$index_name" '.[] | select(.name == $name)' /tmp/currentIndexConfiguration.json)
+    NEXT_URL="$BASE_URL"
+    while [[ -n "$NEXT_URL" ]]; do
+      echo "Requesting: $NEXT_URL"
 
-      if [[ -z "$existing" ]]; then
-        echo "New index detected: $index_name"
-        cp "$file" changed_indexes/
-        continue
-      fi
+      RESPONSE=$(curl -s -H "$AUTH_HEADER" "$NEXT_URL")
+      echo "$RESPONSE" | jq '.[]' >> "$OUT_FILE"
 
-      local_def=$(jq -S 'del(.datatype)' "$file")
-      remote_def=$(echo "$existing" | jq -S 'del(.datatype)')
-
-      if [[ "$local_def" != "$remote_def" ]]; then
-        echo "Index $index_name has changed."
-        cp "$file" changed_indexes/
+      # Detect nextLink or use offset pagination
+      NEXT_LINK=$(echo "$RESPONSE" | jq -r '._links.next.href // empty')
+      if [[ -n "$NEXT_LINK" ]]; then
+        NEXT_URL="https://${acs}/${stack}$NEXT_LINK"
       else
-        echo "Index $index_name unchanged. Skipping."
+        NEXT_URL=""
       fi
     done
+
+    echo "Final fetched index config:"
+    cat "$OUT_FILE" | jq '.'
