@@ -6,16 +6,23 @@
     OUT_FILE="/tmp/currentIndexConfiguration.json"
 
     echo "Fetching all indexes with pagination..."
-    > "$OUT_FILE"  # Clear file
+    > "$OUT_FILE"  # Clear the output file
 
     NEXT_URL="$BASE_URL"
     while [[ -n "$NEXT_URL" ]]; do
       echo "Requesting: $NEXT_URL"
 
       RESPONSE=$(curl -s -H "$AUTH_HEADER" "$NEXT_URL")
-      echo "$RESPONSE" | jq '.[]' >> "$OUT_FILE"
+      
+      # If response is a JSON array, just append it and break (no pagination)
+      if echo "$RESPONSE" | jq -e 'type == "array"' > /dev/null; then
+        echo "$RESPONSE" | jq -c '.[]' >> "$OUT_FILE"
+        break
+      fi
 
-      # Detect nextLink or use offset pagination
+      # Otherwise assume it's a paginated object with `_embedded` and `_links`
+      echo "$RESPONSE" | jq -c '._embedded[]?' >> "$OUT_FILE"
+
       NEXT_LINK=$(echo "$RESPONSE" | jq -r '._links.next.href // empty')
       if [[ -n "$NEXT_LINK" ]]; then
         NEXT_URL="https://${acs}/${stack}$NEXT_LINK"
