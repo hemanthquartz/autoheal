@@ -1,37 +1,32 @@
-- name: Perform Splunk list action
+- name: Perform Splunk Cloud index list action with pagination
   run: |
     API_PATH="/adminconfig/v2/indexes"
-    AUTH_HEADER="Authorization: Bearer ${stack_jwt}"
-    OUT_FILE="/tmp/currentIndexConfiguration.json"
-    BASE_URL="https://${acs}/${stack}${API_PATH}"
+    OFFSET=0
+    STRIDE=100
+    MAX_INDEXES=${{ env.splunk_cloud_max_index }}
+    STACK="${stack}"
+    ACS="${acs}"
+    TOKEN="${stack_jwt}"
+    OUTFILE="/tmp/currentIndexConfiguration.json"
+    echo "[]" > "$OUTFILE"
 
-    echo "Fetching all indexes from Splunk Cloud with pagination..."
-    > "$OUT_FILE"
+    while [ $OFFSET -lt $MAX_INDEXES ]; do
+      echo "Fetching indexes with offset=$OFFSET"
+      RESPONSE=$(curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+        "https://${ACS}/${STACK}${API_PATH}?offset=${OFFSET}&count=${STRIDE}")
 
-    NEXT_URL="$BASE_URL"
+      COUNT=$(echo "$RESPONSE" | jq 'length')
 
-    while [[ -n "$NEXT_URL" ]]; do
-      echo "Requesting: $NEXT_URL"
-      RESPONSE=$(curl -s -H "$AUTH_HEADER" "$NEXT_URL")
-
-      # Append all embedded indexes to file
-      INDEXES=$(echo "$RESPONSE" | jq -c '._embedded.indexes[]?')
-      if [[ -z "$INDEXES" ]]; then
-        echo "No indexes found in response or invalid response format."
+      if [ "$COUNT" -eq 0 ]; then
+        echo "No more indexes to fetch. Exiting."
         break
       fi
 
-      echo "$INDEXES" >> "$OUT_FILE"
+      # Merge current response into cumulative file
+      jq -s '.[0] + .[1]' "$OUTFILE" <(echo "$RESPONSE") > /tmp/tmp_indexes.json
+      mv /tmp/tmp_indexes.json "$OUTFILE"
 
-      # Detect next link
-      NEXT_PATH=$(echo "$RESPONSE" | jq -r '._links.next.href // empty')
-      if [[ -n "$NEXT_PATH" ]]; then
-        NEXT_URL="https://${acs}/${stack}$NEXT_PATH"
-      else
-        NEXT_URL=""
-      fi
+      OFFSET=$((OFFSET + STRIDE))
     done
 
-    echo "Final merged index list:"
-    jq -s '.' "$OUT_FILE" > "${OUT_FILE}.tmp" && mv "${OUT_FILE}.tmp" "$OUT_FILE"
-    cat "$OUT_FILE" | jq '.'
+    echo "Indexes fetched and saved to $OUTFILE"
