@@ -2,34 +2,36 @@
   run: |
     API_PATH="/adminconfig/v2/indexes"
     AUTH_HEADER="Authorization: Bearer ${stack_jwt}"
-    BASE_URL="https://${acs}/${stack}${API_PATH}"
     OUT_FILE="/tmp/currentIndexConfiguration.json"
+    BASE_URL="https://${acs}/${stack}${API_PATH}"
 
-    echo "Fetching all indexes with pagination..."
-    > "$OUT_FILE"  # Clear the output file
+    echo "Fetching all indexes from Splunk Cloud with pagination..."
+    > "$OUT_FILE"
 
     NEXT_URL="$BASE_URL"
+
     while [[ -n "$NEXT_URL" ]]; do
       echo "Requesting: $NEXT_URL"
-
       RESPONSE=$(curl -s -H "$AUTH_HEADER" "$NEXT_URL")
-      
-      # If response is a JSON array, just append it and break (no pagination)
-      if echo "$RESPONSE" | jq -e 'type == "array"' > /dev/null; then
-        echo "$RESPONSE" | jq -c '.[]' >> "$OUT_FILE"
+
+      # Append all embedded indexes to file
+      INDEXES=$(echo "$RESPONSE" | jq -c '._embedded.indexes[]?')
+      if [[ -z "$INDEXES" ]]; then
+        echo "No indexes found in response or invalid response format."
         break
       fi
 
-      # Otherwise assume it's a paginated object with `_embedded` and `_links`
-      echo "$RESPONSE" | jq -c '._embedded[]?' >> "$OUT_FILE"
+      echo "$INDEXES" >> "$OUT_FILE"
 
-      NEXT_LINK=$(echo "$RESPONSE" | jq -r '._links.next.href // empty')
-      if [[ -n "$NEXT_LINK" ]]; then
-        NEXT_URL="https://${acs}/${stack}$NEXT_LINK"
+      # Detect next link
+      NEXT_PATH=$(echo "$RESPONSE" | jq -r '._links.next.href // empty')
+      if [[ -n "$NEXT_PATH" ]]; then
+        NEXT_URL="https://${acs}/${stack}$NEXT_PATH"
       else
         NEXT_URL=""
       fi
     done
 
-    echo "Final fetched index config:"
+    echo "Final merged index list:"
+    jq -s '.' "$OUT_FILE" > "${OUT_FILE}.tmp" && mv "${OUT_FILE}.tmp" "$OUT_FILE"
     cat "$OUT_FILE" | jq '.'
