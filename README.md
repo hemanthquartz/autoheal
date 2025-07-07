@@ -1,23 +1,35 @@
-- name: List all Splunk Cloud indexes (paginated)
+- name: List all Splunk Cloud indexes (auto-pagination)
   run: |
     API_PATH="/adminconfig/v2/indexes"
     BASE_URL="https://${acs}/${stack}${API_PATH}"
     TOKEN="${stack_jwt}"
-    MAX_INDEX=500  # Customize this based on your expected max count
     STRIDE=100
 
     rm -f /tmp/indexes_*.json
 
-    for (( offset=0; offset<=MAX_INDEX; offset+=STRIDE )); do
+    offset=0
+    while true; do
       echo "Fetching indexes with offset $offset"
+      RESPONSE_FILE="/tmp/indexes_${offset}.json"
+
       curl -sSL "${BASE_URL}?offset=${offset}&count=${STRIDE}" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer ${TOKEN}" \
-        -o /tmp/indexes_${offset}.json
+        -o "$RESPONSE_FILE"
+
+      # Stop if response is empty or just null
+      if ! jq -e . "$RESPONSE_FILE" > /dev/null || grep -q null "$RESPONSE_FILE"; then
+        echo "No more data at offset $offset. Stopping."
+        rm -f "$RESPONSE_FILE"
+        break
+      fi
+
+      offset=$((offset + STRIDE))
     done
 
-    # Merge all JSON responses into one file
-    jq -s '[.[][]]' /tmp/indexes_*.json > /tmp/all_indexes.json
+    # Merge valid JSON
+    jq -s '[.[][]]' /tmp/indexes_*.json > /tmp/all_indexes.json || echo "No index data"
+    cat /tmp/all_indexes.json || echo "Merged file is empty"
   env:
     acs: ${{ secrets.acs }}
     stack: ${{ secrets.stack }}
