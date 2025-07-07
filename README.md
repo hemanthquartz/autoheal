@@ -1,32 +1,24 @@
-- name: Perform Splunk Cloud index list action with pagination
+- name: List all Splunk Cloud indexes (paginated)
   run: |
     API_PATH="/adminconfig/v2/indexes"
-    OFFSET=0
-    STRIDE=100
-    MAX_INDEXES=${{ env.splunk_cloud_max_index }}
-    STACK="${stack}"
-    ACS="${acs}"
+    BASE_URL="https://${acs}/${stack}${API_PATH}"
     TOKEN="${stack_jwt}"
-    OUTFILE="/tmp/currentIndexConfiguration.json"
-    echo "[]" > "$OUTFILE"
+    MAX_INDEX=500  # Customize this based on your expected max count
+    STRIDE=100
 
-    while [ $OFFSET -lt $MAX_INDEXES ]; do
-      echo "Fetching indexes with offset=$OFFSET"
-      RESPONSE=$(curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-        "https://${ACS}/${STACK}${API_PATH}?offset=${OFFSET}&count=${STRIDE}")
+    rm -f /tmp/indexes_*.json
 
-      COUNT=$(echo "$RESPONSE" | jq 'length')
-
-      if [ "$COUNT" -eq 0 ]; then
-        echo "No more indexes to fetch. Exiting."
-        break
-      fi
-
-      # Merge current response into cumulative file
-      jq -s '.[0] + .[1]' "$OUTFILE" <(echo "$RESPONSE") > /tmp/tmp_indexes.json
-      mv /tmp/tmp_indexes.json "$OUTFILE"
-
-      OFFSET=$((OFFSET + STRIDE))
+    for (( offset=0; offset<=MAX_INDEX; offset+=STRIDE )); do
+      echo "Fetching indexes with offset $offset"
+      curl -sSL "${BASE_URL}?offset=${offset}&count=${STRIDE}" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer ${TOKEN}" \
+        -o /tmp/indexes_${offset}.json
     done
 
-    echo "Indexes fetched and saved to $OUTFILE"
+    # Merge all JSON responses into one file
+    jq -s '[.[][]]' /tmp/indexes_*.json > /tmp/all_indexes.json
+  env:
+    acs: ${{ secrets.acs }}
+    stack: ${{ secrets.stack }}
+    stack_jwt: ${{ secrets.stack_jwt }}
