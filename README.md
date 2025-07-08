@@ -1,32 +1,45 @@
-for file in parsed_indexes/*.json; do
-  index_name=$(jq -r '.name' "$file")
-  echo "Checking index: $index_name"
+echo "Start: Updating indexes"
+cd $GITHUB_WORKSPACE/parsed_indexes
+pwd
+ls -ltr
 
-  # Get the remote definition for this index
-  existing=$(jq -c --arg name "$index_name" '.[] | select(.name == $name)' /tmp/currentIndexConfiguration.json)
+for jsonFile in *.json; do
+  echo "Processing file: ${jsonFile}"
 
-  if [[ -z "$existing" ]]; then
-    echo "New index detected: $index_name"
-    cp "$file" changed_indexes/
+  # Read index name from file
+  index=$(jq -r '.name' "$jsonFile")
+  localIndex=$(jq '.' "$jsonFile")
+  echo "[${index}] - Evaluating..."
+
+  # Extract matching remote index
+  remoteIndex=$(jq --sort-keys --arg index "$index" '.[] | select(.name == $index)' /tmp/currentIndexConfiguration.json)
+
+  # Skip if local and remote are identical
+  if [[ "$(jq -n --argjson a "$localIndex" --argjson b "$remoteIndex" '$a == $b')" == "true" ]]; then
+    echo "[${index}] - No Update Required"
     continue
   fi
 
-  # Compare only fields in local_def against remote_def
-  change_found=0
-  for key in $(jq -r 'keys[]' "$file"); do
-    local_val=$(jq -r --arg k "$key" '.[$k]' "$file")
-    remote_val=$(echo "$existing" | jq -r --arg k "$key" '.[$k] // "__MISSING__"')
+  echo "[${index}] - Local and Remote do not match, updating remote to reflect git"
 
-    if [[ "$remote_val" != "$local_val" ]]; then
-      echo "Attribute '$key' differs or missing: local='$local_val' vs remote='$remote_val'"
-      change_found=1
+  jsonUpdate=$(echo '{}' | jq '.')
+
+  for key in $(echo "$localIndex" | jq 'del(.name, .datatype) | keys[]' -r); do
+    localVal=$(echo "$localIndex" | jq -r --arg k "$key" '.[$k]')
+    remoteVal=$(echo "$remoteIndex" | jq -r --arg k "$key" '.[$k] // "__MISSING__"')
+
+    if [[ "$localVal" != "$remoteVal" ]]; then
+      echo "  → Field changed: $key: $remoteVal → $localVal"
+      jsonUpdate=$(echo "$jsonUpdate" | jq --arg key "$key" --arg val "$localVal" '. + {($key): $val}')
     fi
   done
 
-  if [[ "$change_found" == "1" ]]; then
-    echo "Index $index_name has changed."
-    cp "$file" changed_indexes/
-  else
-    echo "Index $index_name unchanged. Skipping."
-  fi
+  echo "PATCH payload for ${index}: $jsonUpdate"
+
+  curl -X PATCH "https://${acs}/${stack}/adminconfig/v2/indexes/${index}" \
+    --header "Authorization: Bearer ${stack_jwt}" \
+    --header "Content-Type: application/json" \
+    --data "$jsonUpdate"
+
+  echo "Update complete for ${index}"
 done
