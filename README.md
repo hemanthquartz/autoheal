@@ -1,142 +1,40 @@
-AWSTemplateFormatVersion: '2010-09-09'
-Description: EKS cluster with Fargate workload
-#============================================================================#
- # Parameters
-#============================================================================#
-Parameters:
-  VPC:
-    Type: AWS::EC2::VPC::Id
-    Description: Select VPC for Control Plane
-    Default: vpc-0233cad868fd93a7f
-  ControlPlaneSubnetA:
-    Type: AWS::EC2::Subnet::Id
-    Description: Select subnet for Control Plane
-    Default: subnet-02d64a7b389d13582
-  ControlPlaneSubnetB:
-    Type: AWS::EC2::Subnet::Id
-    Description: Select subnet for Control Plane
-    Default: subnet-06fa34e55d457d6b9
-  FargateProfilePvtSubnet1:
-    Type: AWS::EC2::Subnet::Id
-    Description: Select private subnet for Fargate profile
-    Default: subnet-02d64a7b389d13582
-  FargateProfilePvtSubnet2:
-    Type: AWS::EC2::Subnet::Id
-    Default: subnet-06fa34e55d457d6b9
-    Description: Select private subnet for Fargate profile
-  NameSpace:
-    Type: String
-    Default: myns
-    Description: ace-da-dev-ins
-  EKSClusterName:
-    Type: String
-    Description: Name of k8s cluster
-    Default: ace-da-dev-ins-poc
-    
+Here’s the summary of the architecture organized into two clear categories:
 
-#============================================================================#
- # Resources
-#============================================================================#
-Resources:
-  # Control plane
-  ControlPlane:
-    Type: AWS::EKS::Cluster
-    Properties:
-      Name: !Ref EKSClusterName
-      Version: "1.27"
-      RoleArn: !GetAtt ControlPlaneRole.Arn
-      ResourcesVpcConfig:
-        SecurityGroupIds:
-          - !Ref ControlPlaneSecurityGroup
-        SubnetIds:
-          - !Ref ControlPlaneSubnetA
-          - !Ref ControlPlaneSubnetB 
-      Logging:
-        ClusterLogging:
-          EnabledTypes:
-            - Type: api
-            - Type: audit
-      Tags:
-        - Key: project
-          Value: demo
-        - Key: costcenter
-          Value: CC
-        - Key: criticality
-          Value: low
-        - Key: createdby
-          Value: e2esa
-        - Key: createdon
-          Value: currentdate
-        - Key: env
-          Value: dev
-        - Key: maintainer
-          Value: maintainer@domain.com
-  # Control plane role
-  ControlPlaneRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub "ControlPlaneRole-CF-${AWS::StackName}"
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-            Effect: Allow
-            Principal:
-              Service:
-                - eks.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns: 
-        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
-        - arn:aws:iam::aws:policy/AmazonEKSServicePolicy
+⸻
 
-# Control plane security group
-  ControlPlaneSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Security group for the elastic network interfaces between the control plane and the worker nodes
-      VpcId: !Ref VPC
-      Tags:
-        - Key: cfstack
-          Value: !Sub "${AWS::StackName}-ControlPlaneSecurityGroup"
-  # Configure Fargate Profile
-  EKSFargateProfile:
-    #DependsOn: EKSIdpConfig
-    DependsOn: ControlPlane
-    Type: 'AWS::EKS::FargateProfile'
-    Properties:
-      FargateProfileName: !Sub "${AWS::StackName}-FargateProfile"
-      ClusterName: !Ref EKSClusterName
-      PodExecutionRoleArn: !GetAtt EKSFargatePodExecutionRole.Arn
-      Subnets:
-        - !Ref FargateProfilePvtSubnet1
-        - !Ref FargateProfilePvtSubnet2
-      Selectors:
-        - Namespace: !Ref NameSpace
-          Labels:
-            - Key: service
-              Value: clamav
-  # EKS Fargate PodExecution Role
-  EKSFargatePodExecutionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub "EKSFargatePodExecutionRole-CF-${AWS::StackName}"
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-            Effect: Allow
-            Principal:
-              Service:
-                - eks-fargate-pods.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns: 
-        - arn:aws:iam::aws:policy/AmazonEKSFargatePodExecutionRolePolicy
-        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
-  # EKS Identity provider config
-  # EKSIdpConfig:
-  #   DependsOn: EKSFargateProfile
-  #   Type: AWS::EKS::IdentityProviderConfig
-  #   Properties:
-  #     ClusterName: !Ref EKSClusterName
-  #     Type: oidc
-  #     Oidc:
-  #       ClientId: "kubernetes"
-  #       IssuerUrl: "https://example.com"
+✅ Ingestion Pattern – Event Driven Architecture
+	•	Staging Layer: Initial storage area where raw data lands.
+	•	Event Detection: Events triggered upon new data arrival.
+	•	Amazon SQS: Message queue for decoupling producer and consumer.
+	•	Lambda (Data Synchronization):
+	•	Picks messages from SQS.
+	•	Triggers Glue Iceberg ingestion.
+	•	Glue Iceberg REST Endpoint: Interface for writing to Iceberg tables.
+	•	Data Lake: Stores raw and curated data.
+	•	Glue Data Catalog: Updates metadata for discoverability.
+	•	Control-M (Monitoring): Monitors ingestion flows and events.
+
+⸻
+
+⚙️ Processing Pattern – Intraday Batch Architecture
+	•	Step Function: Orchestrates batch processing steps.
+	•	Lambda (Job Invocation): Initiates EMR job based on configurations.
+	•	EMR on EC2: Executes Spark jobs or batch transformations.
+	•	Outputs Written to:
+	•	Base Layer
+	•	Master Layer
+	•	Glue Data Catalog: Updates metadata for processed datasets.
+	•	Control-M (Triggering): Initiates processing jobs on schedule or condition.
+
+⸻
+
+🔐 Unified Governance Layer (Supports Both Patterns)
+	•	Collibra Platform:
+	•	Data Catalog
+	•	Data Governance
+	•	Data Lineage
+	•	Data Quality & Observability
+
+⸻
+
+Let me know if you’d like a diagrammatic breakdown or editable version for documentation or presentation.
