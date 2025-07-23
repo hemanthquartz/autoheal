@@ -1,34 +1,28 @@
-Perfect — since it’s a demo environment, you can use cost-effective general-purpose EC2 instances for EKS, while still supporting basic Spark workloads.
+Here’s a summarized description of the provided architecture:
 
-Here’s the updated and final list with that adjustment:
+Architecture Summary
 
-⸻
+The architecture showcases a file-based ingestion and event-driven processing pipeline consisting of two main patterns: Data Ingestion (Event Driven) and Data Processing Layer (Intraday Batches). Both these layers are monitored and triggered through Control-M, with metadata management centralized through Collibra as a unified governance platform.
 
-✅ Complete List of Services Involved in the Architecture (Demo Environment)
+Data Ingestion Layer (Event Driven Pattern)
+	•	Data Ingestion: Files arrive at a staging area.
+	•	Metadata Extraction: AWS Lambda extracts metadata from incoming files.
+	•	Event Notification: Metadata extraction triggers events published to Amazon SQS.
+	•	Standardization and Synchronization: AWS Step Functions orchestrate file standardization and synchronization activities.
+	•	Cataloging and Storage: Standardized files are stored in a Glue Data Catalog, leveraging Apache Iceberg for managing the data lake.
 
-AWS Services
-	1.	Amazon S3 – Staging area, data lake zones (Base/Master), logs
-	2.	AWS Lambda – Metadata extraction, job config fetcher, and job invoker
-	3.	AWS Step Functions – Orchestration of ingestion and processing pipelines
-	4.	AWS Glue – File standardization and ETL transformations
-	5.	AWS Glue Data Catalog – Schema and metadata management
-	6.	Amazon EMR (on EC2) – Spark-based intraday batch processing
-	7.	Amazon EKS (on EC2) – Optional container-based Spark job execution
-	•	✅ For demo use, cost-effective EC2 instance types for EKS node groups:
-	•	t3.large (2 vCPU, 8 GiB RAM)
-	•	m5.large (2 vCPU, 8 GiB RAM)
-	•	m5.xlarge (4 vCPU, 16 GiB RAM — better for light Spark workloads)
-	8.	Amazon CloudWatch – Logs, metrics, alarms, and dashboards
-	9.	AWS IAM – Role and policy management across all services
-	10.	Amazon EventBridge / S3 Event Notifications – Trigger Step Functions when files land in S3
+Data Processing Layer (Intraday Batches)
+	•	Dynamic Configuration: Job configuration details stored in DynamoDB.
+	•	Job Invocation: AWS Lambda fetches job configurations dynamically from DynamoDB.
+	•	Orchestration: AWS Step Functions invoke EMR on EKS pods, providing job configuration details dynamically fetched by the Lambda.
+	•	Data Catalog and Storage: Processed data gets cataloged via AWS Glue Data Catalog, accessible through Glue JDBC endpoints.
+	•	Databases: Results stored in relational databases, maintaining Base and Master data.
 
-⸻
+Unified Data Governance Platform
+	•	Collibra serves as a centralized platform for:
+	•	Data Catalog
+	•	Data Governance
+	•	Data Lineage
+	•	Data Quality & Observability
 
-CI/CD and IaC Tools
-	11.	Jenkins – CI/CD automation for Lambda, Step Functions, EMR job scripts
-	12.	GitHub – Source control for code, ETL scripts, and infrastructure templates
-	13.	CloudFormation / Terraform – Infrastructure provisioning and configuration management
-
-⸻
-
-Let me know if you want this as a presentation slide (PPTX) or visual diagram.
+The architecture emphasizes automation, dynamic configuration, event-driven processing, and robust data governance to ensure high-quality data ingestion and batch processing.
