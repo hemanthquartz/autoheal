@@ -1,0 +1,91 @@
+AWS Service,Permission
+Amazon EKS,eks:CreateCluster
+Amazon EKS,eks:DeleteCluster
+Amazon EKS,eks:DescribeCluster
+Amazon EKS,eks:ListClusters
+Amazon EKS,eks:UpdateClusterConfig
+Amazon EKS,eks:UpdateClusterVersion
+Amazon EKS,eks:CreateNodegroup
+Amazon EKS,eks:DeleteNodegroup
+Amazon EKS,eks:DescribeNodegroup
+Amazon EKS,eks:UpdateNodegroupConfig
+Amazon EKS,eks:CreateAddon
+Amazon EKS,eks:DeleteAddon
+Amazon EKS,eks:DescribeAddon
+Amazon EKS,eks:UpdateAddon
+Amazon EKS,eks:TagResource
+Amazon EC2 (for EKS),ec2:CreateSecurityGroup
+Amazon EC2 (for EKS),ec2:DeleteSecurityGroup
+Amazon EC2 (for EKS),ec2:AuthorizeSecurityGroupIngress
+Amazon EC2 (for EKS),ec2:AuthorizeSecurityGroupEgress
+Amazon EC2 (for EKS),ec2:RevokeSecurityGroupIngress
+Amazon EC2 (for EKS),ec2:RevokeSecurityGroupEgress
+Amazon EC2 (for EKS),ec2:DescribeSecurityGroups
+Amazon EC2 (for EKS),ec2:CreateSubnet
+Amazon EC2 (for EKS),ec2:DeleteSubnet
+Amazon EC2 (for EKS),ec2:DescribeSubnets
+Amazon EC2 (for EKS),ec2:DescribeVpcs
+Amazon EC2 (for EKS),ec2:CreateTags
+Amazon EC2 (for EKS),ec2:DeleteTags
+Amazon EC2 (for EKS),ec2:CreateLaunchTemplate
+Amazon EC2 (for EKS),ec2:DeleteLaunchTemplate
+Amazon EC2 (for EKS),ec2:DescribeLaunchTemplates
+Amazon EC2 (for EKS),ec2:DescribeRouteTables
+Amazon EC2 (for EKS),ec2:DescribeInternetGateways
+Amazon EC2 (for EKS),ec2:DescribeNatGateways
+Amazon EC2 (for EKS),ec2:DescribeAvailabilityZones
+EMR on EKS,emr-containers:CreateVirtualCluster
+EMR on EKS,emr-containers:DeleteVirtualCluster
+EMR on EKS,emr-containers:DescribeVirtualCluster
+EMR on EKS,emr-containers:TagResource
+AWS Step Functions,states:CreateStateMachine
+AWS Step Functions,states:UpdateStateMachine
+AWS Step Functions,states:DeleteStateMachine
+AWS Step Functions,states:TagResource
+AWS Glue,glue:CreateDatabase
+AWS Glue,glue:DeleteDatabase
+AWS Glue,glue:CreateTable
+AWS Glue,glue:DeleteTable
+AWS Glue,glue:CreateJob
+AWS Glue,glue:DeleteJob
+AWS Glue,glue:CreateCrawler
+AWS Glue,glue:DeleteCrawler
+AWS Glue,glue:CreateConnection
+AWS Glue,glue:DeleteConnection
+AWS Glue,glue:TagResource
+Amazon S3,s3:CreateBucket
+Amazon S3,s3:PutBucketPolicy
+Amazon S3,s3:PutBucketTagging
+Amazon S3,s3:DeleteBucket
+Amazon DynamoDB,dynamodb:CreateTable
+Amazon DynamoDB,dynamodb:UpdateTable
+Amazon DynamoDB,dynamodb:DeleteTable
+Amazon DynamoDB,dynamodb:DescribeTable
+Amazon DynamoDB,dynamodb:TagResource
+AWS Lambda,lambda:CreateFunction
+AWS Lambda,lambda:UpdateFunctionConfiguration
+AWS Lambda,lambda:UpdateFunctionCode
+AWS Lambda,lambda:DeleteFunction
+AWS Lambda,lambda:TagResource
+Amazon CloudWatch Logs,logs:CreateLogGroup
+Amazon CloudWatch Logs,logs:DeleteLogGroup
+Amazon CloudWatch Logs,logs:TagResource
+AWS IAM,iam:CreateRole
+AWS IAM,iam:DeleteRole
+AWS IAM,iam:PutRolePolicy
+AWS IAM,iam:DeleteRolePolicy
+AWS IAM,iam:AttachRolePolicy
+AWS IAM,iam:DetachRolePolicy
+AWS IAM,iam:TagRole
+AWS IAM,iam:PassRole
+AWS IAM,iam:CreateServiceLinkedRole
+Amazon EventBridge,events:PutRule
+Amazon EventBridge,events:DeleteRule
+Amazon EventBridge,events:PutTargets
+Amazon EventBridge,events:RemoveTargets
+Amazon EventBridge,events:TagResource
+Amazon SQS,sqs:CreateQueue
+Amazon SQS,sqs:DeleteQueue
+Amazon SQS,sqs:GetQueueAttributes
+Amazon SQS,sqs:SetQueueAttributes
+Amazon SQS,sqs:TagQueue
