@@ -1,28 +1,12 @@
-Here’s a summarized description of the provided architecture:
-
-Architecture Summary
-
-The architecture showcases a file-based ingestion and event-driven processing pipeline consisting of two main patterns: Data Ingestion (Event Driven) and Data Processing Layer (Intraday Batches). Both these layers are monitored and triggered through Control-M, with metadata management centralized through Collibra as a unified governance platform.
-
-Data Ingestion Layer (Event Driven Pattern)
-	•	Data Ingestion: Files arrive at a staging area.
-	•	Metadata Extraction: AWS Lambda extracts metadata from incoming files.
-	•	Event Notification: Metadata extraction triggers events published to Amazon SQS.
-	•	Standardization and Synchronization: AWS Step Functions orchestrate file standardization and synchronization activities.
-	•	Cataloging and Storage: Standardized files are stored in a Glue Data Catalog, leveraging Apache Iceberg for managing the data lake.
-
-Data Processing Layer (Intraday Batches)
-	•	Dynamic Configuration: Job configuration details stored in DynamoDB.
-	•	Job Invocation: AWS Lambda fetches job configurations dynamically from DynamoDB.
-	•	Orchestration: AWS Step Functions invoke EMR on EKS pods, providing job configuration details dynamically fetched by the Lambda.
-	•	Data Catalog and Storage: Processed data gets cataloged via AWS Glue Data Catalog, accessible through Glue JDBC endpoints.
-	•	Databases: Results stored in relational databases, maintaining Base and Master data.
-
-Unified Data Governance Platform
-	•	Collibra serves as a centralized platform for:
-	•	Data Catalog
-	•	Data Governance
-	•	Data Lineage
-	•	Data Quality & Observability
-
-The architecture emphasizes automation, dynamic configuration, event-driven processing, and robust data governance to ensure high-quality data ingestion and batch processing.
+| **Role Name**                           | **Attached To**                                       | **Trust Policy**               | **Purpose**                                                          | **Key Permissions**                                                   |
+| --------------------------------------- | ----------------------------------------------------- | ------------------------------ | -------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `ace-da-emreks-lambda-role`             | AWS Lambda                                            | `lambda.amazonaws.com`         | Extract metadata from files, call Step Function or write to DynamoDB | `dynamodb:PutItem`, `states:StartExecution`, `s3:GetObject`, `logs:*` |
+| `ace-da-emreks-stepfunction-role`       | AWS Step Functions                                    | `states.amazonaws.com`         | Invoke EMR on EKS job, call Lambda, write logs                       | `lambda:InvokeFunction`, `emr-containers:StartJobRun`, `logs:*`       |
+| `ace-da-emreks-emr-on-eks-role`         | EMR on EKS Job Run                                    | `emr-containers.amazonaws.com` | Allow EMR to read/write to S3, access Glue catalog, write logs       | `s3:*`, `glue:Get*`, `logs:*`, `kms:Decrypt`                          |
+| `ace-da-emreks-emr-virtualcluster-role` | EMR on EKS Virtual Cluster (optional)                 | `emr-containers.amazonaws.com` | Manage EMR virtual cluster lifecycle (only if needed explicitly)     | `eks:AccessKubernetesApi`, `eks:DescribeCluster`                      |
+| `ace-da-emreks-eks-node-role`           | EKS Worker Nodes (EC2)                                | `ec2.amazonaws.com`            | Allow EC2 nodes to join EKS cluster and access resources             | `eks:DescribeCluster`, `ecr:GetAuthorizationToken`, `logs:*`, `s3:*`  |
+| `ace-da-emreks-eks-pod-role`            | IAM Roles for Service Accounts (IRSA) in EKS          | `sts.amazonaws.com`            | Fine-grained access for pods (EMR job pods)                          | `s3:*`, `glue:*`, `cloudwatch:PutMetricData`                          |
+| `ace-da-emreks-glue-role`               | AWS Glue Job / Crawler                                | `glue.amazonaws.com`           | Read/write to S3, access Glue catalog, write logs                    | `s3:*`, `glue:*`, `logs:*`, `kms:Decrypt`                             |
+| `ace-da-emreks-eventbridge-role`        | EventBridge rule targets (e.g. Step Function, Lambda) | `events.amazonaws.com`         | Allow EventBridge to invoke targets like Lambda or Step Functions    | `lambda:InvokeFunction`, `states:StartExecution`                      |
+| `ace-da-emreks-sfn-caller-lambda-role`  | Lambda that starts Step Function execution            | `lambda.amazonaws.com`         | Trigger Step Function from Lambda                                    | `states:StartExecution`                                               |
+| `ace-da-emreks-crawler-role`            | Glue Crawler                                          | `glue.amazonaws.com`           | Read S3 data and update Glue Data Catalog                            | `s3:GetObject`, `glue:UpdateTable`                                    |
