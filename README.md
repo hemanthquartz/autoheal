@@ -424,4 +424,95 @@ Resources:
       Runtime: python3.9
       Timeout: 30
 
-#############################################################################################
+#############################################################################################55
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  EMR on EKS Prereqs - Nodegroup, Node Role, and EMR Virtual Cluster for emr-data-team-b
+
+Parameters:
+  ClusterName:
+    Type: String
+    Description: Name of your EKS cluster
+    Default: emr-eks-fargate
+
+  NodeInstanceType:
+    Type: String
+    Default: t3.large
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Subnets for EC2 nodes
+    Default: "subnet-0a427c81c6eb3c144,subnet-00116ddb3bf8e90e4"
+
+  NodeGroupName:
+    Type: String
+    Default: emr-data-team-b-ng2
+
+  NodeDesiredCapacity:
+    Type: Number
+    Default: 2
+
+  NodeMinSize:
+    Type: Number
+    Default: 1
+
+  NodeMaxSize:
+    Type: Number
+    Default: 3
+
+Resources:
+  # --- IAM role for node group (admin, + AmazonEKSWorkerNodePolicy, etc) ---
+  EmrEksNodeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub emr-eks-ng-role-${AWS::StackName}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+  EmrEksNodeInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub emr-eks-ng-profile-${AWS::StackName}
+      Roles:
+        - !Ref EmrEksNodeRole
+
+  # --- EKS Node Group (EC2) ---
+  EmrEksNodeGroup2:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref ClusterName
+      NodegroupName: !Ref NodeGroupName
+      ScalingConfig:
+        DesiredSize: !Ref NodeDesiredCapacity
+        MinSize: !Ref NodeMinSize
+        MaxSize: !Ref NodeMaxSize
+      Subnets: !Ref SubnetIds
+      InstanceTypes: [t3.2xlarge]
+      AmiType: BOTTLEROCKET_x86_64
+      NodeRole: !GetAtt EmrEksNodeRole.Arn
+      CapacityType: ON_DEMAND
+
+  # --- EMR Virtual Cluster (created after namespace/SA setup, see note below) ---
+  EmrEksVirtualCluster:
+    Type: AWS::EMRContainers::VirtualCluster
+    Properties:
+      Name: emr-data-team-b-vc
+      ContainerProvider:
+        Type: EKS
+        Id: !Ref ClusterName
+        Info:
+          EksInfo:
+            Namespace: emr-data-team-b
+
