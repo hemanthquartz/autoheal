@@ -1,1 +1,63 @@
-"ZipFile": "import boto3\nimport botocore\nimport cfnresponse\nimport pprint\n\n\ndef create_bucket(name, region, tags_list):\n    client = boto3.client('s3')\n\n    # === NEW: skip creation if bucket already exists ===\n    try:\n        client.head_bucket(Bucket=name)\n        print(f\"Bucket {name} already exists; skipping creation.\")\n        # Optionally (and safely) apply tags to an existing bucket\n        if tags_list:\n            try:\n                client.put_bucket_tagging(Bucket=name, Tagging={'TagSet': tags_list})\n                print(\"Tagged bucket successfully (existing bucket)\")\n            except Exception as e:\n                print(f\"Failed to tag existing bucket {name}. Error: {e}\")\n        return\n    except botocore.exceptions.ClientError as e:\n        # 404/NoSuchBucket means it doesn't exist; proceed to create\n        code = e.response.get('Error', {}).get('Code')\n        if code in ['404', 'NoSuchBucket']:\n            print(f\"Bucket {name} not found. Proceeding with creation.\")\n        else:\n            # Other errors (e.g., AccessDenied) should surface\n            print(f\"head_bucket error while checking {name}: {e}\")\n            raise\n\n    # === Original creation logic (unchanged, just runs only if needed) ===\n    try:\n        if region == 'us-east-1':\n            client.create_bucket(ACL='private', Bucket=name)\n        else:\n            client.create_bucket(\n                ACL='private',\n                Bucket=name,\n                CreateBucketConfiguration={'LocationConstraint': region}\n            )\n        print(f\"Amazon S3 bucket {name} created successfully\")\n    except Exception as e:\n        # Keep original tolerant behavior\n        if 'BucketAlreadyOwnedByYou' in str(e) or 'BucketAlreadyExists' in str(e):\n            print(f\"Bucket {name} already exists; skipping creation.\")\n        else:\n            print(f\"Failed to create Amazon S3 bucket {name}. Error: {e}\")\n            raise\n\n    # === Tagging (preserved) ===\n    if tags_list:\n        try:\n            client.put_bucket_tagging(Bucket=name, Tagging={'TagSet': tags_list})\n            print(\"Tagged bucket successfully\")\n        except Exception as e:\n            print(f\"Failed to tag bucket {name}. Error: {e}\")\n"
+name: Apply-to-eis-jumpbox-qa-vm
+run-name: Apply-to-eis-jumpbox-qa-vm
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Action to perform"
+        required: true
+        default: apply
+        type: choice
+        options:
+          - apply
+          - destroy
+      env:
+        description: "Target environment"
+        required: true
+        default: blue
+        type: choice
+        options:
+          - blue
+          - green
+      optstfville_path:
+        description: "Terraform variables JSON path"
+        required: true
+        default: "equities/eis-jumpbox-${{ github.event.inputs.env }}.json"
+      azure_client_id:
+        description: "Azure Client ID"
+        required: true
+        default: "f0a3f0a2-b5eb-4767-86c8-bd813b8649a3"
+      azure_tenant_id:
+        description: "Azure Tenant ID"
+        required: true
+        default: "085f8aca-82fb-4bb0-8f68-cb6765754231"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy EIS-JUMPBOX-QA-${{ inputs.env }}-VM
+    if: ${{ github.ref == 'refs/heads/main' && github.event.inputs.action == 'apply' }}
+    uses: ./.github/workflows/pipeline-apply.yml
+    with:
+      optstfville_path: "equities/eis-jumpbox-${{ inputs.env }}.json"
+      cloud_providers: "azure"
+      azure_client_id: ${{ github.event.inputs.azure_client_id }}
+      azure_tenant_id: ${{ github.event.inputs.azure_tenant_id }}
+      AZ_CLIENT_SECRET: ${{ secrets.PDE_SVC_INTEGRATOR_IAM_NONPROD_CLIENT_SECRET }}
+      GH_TOKEN: ${{ secrets.PDE_GHE_PAT_SECRET }}
+
+  destroy:
+    name: Destroy EIS-JUMPBOX-QA-${{ inputs.env }}-VM
+    if: ${{ github.ref == 'refs/heads/main' && github.event.inputs.action == 'destroy' }}
+    uses: ./.github/workflows/pipeline-destroy.yml
+    with:
+      optstfville_path: "equities/eis-jumpbox-${{ inputs.env }}.json"
+      cloud_providers: "azure"
+      azure_client_id: ${{ github.event.inputs.azure_client_id }}
+      azure_tenant_id: ${{ github.event.inputs.azure_tenant_id }}
+      AZ_CLIENT_SECRET: ${{ secrets.PDE_SVC_INTEGRATOR_IAM_NONPROD_CLIENT_SECRET }}
+      GH_TOKEN: ${{ secrets.PDE_GHE_PAT_SECRET }}
