@@ -1,0 +1,71 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  EMR on EKS virtual cluster and job execution role. Assumes the EKS cluster and Fargate profiles exist.
+  NOTE: Ensure IRSA (IAM OIDC provider) is associated with the EKS cluster and the namespace exists.
+Parameters:
+  ClusterName:
+    Type: String
+    Description: Target EKS cluster name
+  Namespace:
+    Type: String
+    Default: emr-data-team-a
+    Description: Kubernetes namespace to register as EMR virtual cluster (e.g., emr-data-team-a)
+  JobExecutionRoleName:
+    Type: String
+    Default: !Sub '${ClusterName}-emr-${Namespace}'
+    Description: Name for the EMR job execution role to be created
+  AdditionalManagedPolicyArns:
+    Type: List<String>
+    Default: [ 'arn:aws:iam::aws:policy/AmazonS3FullAccess' ]
+    Description: Extra policies to attach to the job execution role (adjust to least privilege)
+Resources:
+  EmrJobExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref JobExecutionRoleName
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: elasticmapreduce.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns: !Ref AdditionalManagedPolicyArns
+      Policies:
+        - PolicyName: EMRContainersBasicLogging
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+  EmrVirtualCluster:
+    Type: AWS::EMRContainers::VirtualCluster
+    Properties:
+      Name: !Sub '${ClusterName}-emr-${Namespace}'
+      ContainerProvider:
+        Type: EKS
+        Id: !Ref ClusterName
+        Info:
+          EksInfo:
+            Namespace: !Ref Namespace
+  UpdateTrustPolicyCommand:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Type: String
+      Name: !Sub '/emr-eks/${ClusterName}/${Namespace}/update-trust-policy-cli'
+      Value: !Sub |
+        aws emr-containers update-role-trust-policy --cluster-name ${ClusterName} --namespace ${Namespace} --role-name ${JobExecutionRoleName}
+      Description: Helper CLI to update job execution role trust policy for IRSA
+Outputs:
+  VirtualClusterId:
+    Value: !Ref EmrVirtualCluster
+  VirtualClusterArn:
+    Value: !GetAtt EmrVirtualCluster.Arn
+  JobExecutionRoleArn:
+    Value: !GetAtt EmrJobExecutionRole.Arn
+  UpdateRoleTrustPolicyCLI:
+    Value: !Ref UpdateTrustPolicyCommand

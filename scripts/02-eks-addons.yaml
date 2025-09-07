@@ -1,0 +1,47 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: EKS managed add-ons for CoreDNS, kube-proxy, and VPC CNI.
+Parameters:
+  ClusterName:
+    Type: String
+    Description: Target EKS cluster name
+  CoreDNSVersion:
+    Type: String
+    Default: ''
+    Description: Optional version. Leave blank for AWS recommended.
+  KubeProxyVersion:
+    Type: String
+    Default: ''
+    Description: Optional version. Leave blank for AWS recommended.
+  VpcCniVersion:
+    Type: String
+    Default: ''
+    Description: Optional version. Leave blank for AWS recommended.
+Conditions:
+  HasCoreDNSVersion: !Not [ !Equals [ !Ref CoreDNSVersion, '' ] ]
+  HasKubeProxyVersion: !Not [ !Equals [ !Ref KubeProxyVersion, '' ] ]
+  HasVpcCniVersion: !Not [ !Equals [ !Ref VpcCniVersion, '' ] ]
+Resources:
+  VpcCniAddon:
+    Type: AWS::EKS::Addon
+    Properties:
+      AddonName: vpc-cni
+      ClusterName: !Ref ClusterName
+      ResolveConflicts: NONE
+      AddonVersion: !If [ HasVpcCniVersion, !Ref VpcCniVersion, !Ref "AWS::NoValue" ]
+  CoreDNSAddon:
+    Type: AWS::EKS::Addon
+    Properties:
+      AddonName: coredns
+      ClusterName: !Ref ClusterName
+      ResolveConflicts: NONE
+      AddonVersion: !If [ HasCoreDNSVersion, !Ref CoreDNSVersion, !Ref "AWS::NoValue" ]
+  KubeProxyAddon:
+    Type: AWS::EKS::Addon
+    Properties:
+      AddonName: kube-proxy
+      ClusterName: !Ref ClusterName
+      ResolveConflicts: NONE
+      AddonVersion: !If [ HasKubeProxyVersion, !Ref KubeProxyVersion, !Ref "AWS::NoValue" ]
+Outputs:
+  Addons:
+    Value: !Join [ ',', [ !Ref VpcCniAddon, !Ref CoreDNSAddon, !Ref KubeProxyAddon ] ]

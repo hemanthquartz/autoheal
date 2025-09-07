@@ -1,0 +1,46 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: EKS Fargate profiles for kube-system and EMR namespaces (wildcard emr-*).
+Parameters:
+  ClusterName:
+    Type: String
+    Description: Target EKS cluster name
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets for scheduling Fargate pods
+Resources:
+  FargateProfileKubeSystem:
+    Type: AWS::EKS::FargateProfile
+    Properties:
+      ClusterName: !Ref ClusterName
+      FargateProfileName: kube-system
+      PodExecutionRoleArn: !GetAtt FargatePodExecutionRole.Arn
+      Subnets: !Ref PrivateSubnetIds
+      Selectors:
+        - Namespace: kube-system
+  FargateProfileEmrWildcard:
+    Type: AWS::EKS::FargateProfile
+    Properties:
+      ClusterName: !Ref ClusterName
+      FargateProfileName: emr-wildcard
+      PodExecutionRoleArn: !GetAtt FargatePodExecutionRole.Arn
+      Subnets: !Ref PrivateSubnetIds
+      Selectors:
+        - Namespace: emr-*
+  FargatePodExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: eks-fargate-pods.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSFargatePodExecutionRolePolicy
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-fargate-pod-execution-role'
+Outputs:
+  FargatePodExecutionRoleArn:
+    Value: !GetAtt FargatePodExecutionRole.Arn

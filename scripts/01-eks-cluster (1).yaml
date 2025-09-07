@@ -1,0 +1,108 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  EKS control plane (Fargate-only) for EMR on EKS. Assumes VPC/Subnets/Gateways already exist.
+  Creates: EKS cluster, IAM role, optional control-plane SG. Does NOT create nodegroups.
+Parameters:
+  ClusterName:
+    Type: String
+    Default: emr-eks-fargate
+    Description: EKS cluster name
+  ClusterVersion:
+    Type: String
+    Default: '1.33'
+    AllowedPattern: '^[0-9]+\.[0-9]+'
+    Description: Kubernetes version for the EKS cluster
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Existing VPC Id
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Comma-separated list of existing **private** subnet IDs for the cluster
+  ClusterSecurityGroupId:
+    Type: String
+    Default: ''
+    Description: Optional existing security group ID to attach to the control plane. Leave blank to create one.
+  EndpointPublicAccess:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true','false']
+    Description: Whether the cluster endpoint is publicly accessible
+  EndpointPrivateAccess:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true','false']
+    Description: Whether the cluster endpoint is privately accessible
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: "Cluster" }
+        Parameters: [ClusterName, ClusterVersion]
+      - Label: { default: "Networking (pre-existing)" }
+        Parameters: [VpcId, PrivateSubnetIds, ClusterSecurityGroupId]
+      - Label: { default: "API Endpoint" }
+        Parameters: [EndpointPublicAccess, EndpointPrivateAccess]
+Conditions:
+  CreateClusterSG: !Equals [ !Ref ClusterSecurityGroupId, '' ]
+Resources:
+  ClusterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: CreateClusterSG
+    Properties:
+      GroupDescription: EKS control plane security group
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-controlplane'
+  ClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: eks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+        - arn:aws:iam::aws:policy/AmazonEKSVPCResourceController
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-cluster-role'
+  EKSCluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      Name: !Ref ClusterName
+      RoleArn: !GetAtt ClusterRole.Arn
+      Version: !Ref ClusterVersion
+      Logging:
+        ClusterLogging:
+          EnabledTypes:
+            - Type: api
+            - Type: audit
+            - Type: authenticator
+            - Type: controllerManager
+            - Type: scheduler
+      ResourcesVpcConfig:
+        SecurityGroupIds:
+          - !If [ CreateClusterSG, !Ref ClusterSecurityGroup, !Ref ClusterSecurityGroupId ]
+        SubnetIds: !Ref PrivateSubnetIds
+        EndpointPublicAccess: !Equals [ !Ref EndpointPublicAccess, 'true' ]
+        EndpointPrivateAccess: !Equals [ !Ref EndpointPrivateAccess, 'true' ]
+Outputs:
+  ClusterName:
+    Value: !Ref EKSCluster
+    Export:
+      Name: !Sub '${AWS::StackName}-ClusterName'
+  ClusterArn:
+    Value: !GetAtt EKSCluster.Arn
+  ClusterSecurityGroupId:
+    Value: !If [ CreateClusterSG, !Ref ClusterSecurityGroup, !Ref ClusterSecurityGroupId ]
+  ClusterOIDCIssuerUrl:
+    Description: OIDC issuer URL for the cluster (use to create IAM OIDC provider manually if desired)
+    Value: !GetAtt EKSCluster.OpenIdConnectIssuerUrl
