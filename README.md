@@ -1,36 +1,67 @@
-jobs:
-  - name: Installation of MongoDB software
-    hosts: "{{ portfolio }}"
-    env:
-      become: yes
-    become_method: runas
-    become_user: System
-    vars:
-      DOMAIN_USERNAME: "{{ DOMAIN_USERNAME }}"
-      DOMAIN_PASSWORD: "{{ DOMAIN_PASSWORD }}"
-    tasks:
-      - name: ensure .NET Framework 4.8 requirement is satisfied for chocolaty CLI v1.4.6+
-        block:
-          - name: install Chocolately CLI v1.4.6
-            win_chocolatey:
-              name: 'chocolatey'
-              state: latest
-              version: '1.4.6'
-              force: yes
-          - name: install Microsoft .NET Framework 4.8
-            win_chocolatey:
-              name: 'netfx-4.8'
-              state: present
-      - name: Check if VM is already domain joined
-        win_shell: |
-          (Get-WmiObject win32_ComputerSystem).PartOfDomain
-        register: domain_check
-      - name: Force domain join using PowerShell
-        win_domain:
-          dns_domain_name: "{{ ansible_facts['hostname'] }}.provider.engineering"
-          hostname: "{{ ansible_facts['hostname'] }}"
-          user: "{{ DOMAIN_USERNAME }}"
-          password: "{{ DOMAIN_PASSWORD }}"
-        when: domain_check.stdout.strip() != "True"
-      - name: Reboot the host to complete domain join and .NET Framework 4.8 install
-        ansible.windows.win_reboot:
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  EMR on EKS Virtual Cluster and Execution Role for data-team-a (with IRSA support for multiple namespaces)
+
+Parameters:
+  ClusterName:
+    Type: String
+    Description: EKS Cluster name (must match EKS::Cluster::Name)
+
+Resources:
+  EmrExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ClusterName}-emr-data-team-a"
+      Description: EMR Execution Role for emr-data-team-a (supports IRSA for multiple teams)
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EMR
+            Effect: Allow
+            Principal:
+              Service: elasticmapreduce.amazonaws.com
+            Action: sts:AssumeRole
+
+          - Sid: IRSA
+            Effect: Allow
+            Principal:
+              Federated: arn:aws:iam::064603859039:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/4FE5345D95E91A60E436CAFE3A4AD4EA
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                oidc.eks.us-east-1.amazonaws.com/id/4FE5345D95E91A60E436CAFE3A4AD4EA:aud: sts.amazonaws.com
+              StringLike:
+                oidc.eks.us-east-1.amazonaws.com/id/4FE5345D95E91A60E436CAFE3A4AD4EA:sub: system:serviceaccount:emr-data-team-a:emr-containers-sa-*-*-064603859039-*
+
+          - Effect: Allow
+            Principal:
+              Federated: arn:aws:iam::064603859039:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/4FE5345D95E91A60E436CAFE3A4AD4EA
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringLike:
+                oidc.eks.us-east-1.amazonaws.com/id/4FE5345D95E91A60E436CAFE3A4AD4EA:sub: system:serviceaccount:emr-data-team-b:emr-containers-sa-*-*-064603859039-csq0syvldn3aflco8bfkqrhssu3rfs8dfycg0va8zeg5ihcx
+
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      Tags:
+        - Key: Name
+          Value: emr-data-team-a
+
+  EmrVirtualCluster:
+    Type: AWS::EMRContainers::VirtualCluster
+    Properties:
+      Name: !Sub "${ClusterName}-emr-data-team-a"
+      ContainerProvider:
+        Type: EKS
+        Id: !Ref ClusterName
+        Info:
+          EksInfo:
+            Namespace: emr-data-team-a
+
+Outputs:
+  VirtualClusterId:
+    Value: !Ref EmrVirtualCluster
+  VirtualClusterArn:
+    Value: !GetAtt EmrVirtualCluster.Arn
+  JobExecutionRoleArn:
+    Value: !GetAtt EmrExecutionRole.Arn
