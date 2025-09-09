@@ -1,0 +1,91 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: EKS Blueprints Add-ons: Managed Add-ons + Fluent Bit for Fargate
+Parameters:
+  ClusterName:
+    Type: String
+    Description: EKS Cluster name
+  ClusterVersion:
+    Type: String
+    Description: EKS Cluster version
+  EnableFargateFluentBit:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Whether to enable Fluent Bit for Fargate
+Resources:
+  CorednsAddon:
+    Type: AWS::EKS::Addon
+    Properties:
+      AddonName: coredns
+      ClusterName: !Ref ClusterName
+      ResolveConflicts: PRESERVE
+      ConfigurationValues: |
+        {
+          "computeType": "Fargate",
+          "resources": {
+            "limits": {
+              "cpu": "0.25",
+              "memory": "256M"
+            },
+            "requests": {
+              "cpu": "0.25",
+              "memory": "256M"
+            }
+          }
+        }
+  VpcCniAddon:
+    Type: AWS::EKS::Addon
+    Properties:
+      AddonName: vpc-cni
+      ClusterName: !Ref ClusterName
+      ResolveConflicts: PRESERVE
+  KubeProxyAddon:
+    Type: AWS::EKS::Addon
+    Properties:
+      AddonName: kube-proxy
+      ClusterName: !Ref ClusterName
+      ResolveConflicts: PRESERVE
+  FluentBitNamespace:
+    Type: AWS::EKS::Manifest
+    Condition: EnableFluentBit
+    Properties:
+      ClusterName: !Ref ClusterName
+      Manifest:
+        - |
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: aws-observability
+  FluentBitConfigMap:
+    Type: AWS::EKS::Manifest
+    Condition: EnableFluentBit
+    Properties:
+      ClusterName: !Ref ClusterName
+      Manifest:
+        - |
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: aws-logging
+            namespace: aws-observability
+            labels:
+              app.kubernetes.io/name: aws-for-fluent-bit
+          data:
+            output.conf: |
+              [OUTPUT]
+                  Name cloudwatch
+                  Match   *
+                  region us-east-1
+                  log_group_name /aws/eks/fluentbit-logs
+                  log_stream_prefix from-fluent-bit-
+            filters.conf: |
+              [FILTER]
+                  Name parser
+                  Match *
+                  Key_Name log
+                  Parser apache
+Conditions:
+  EnableFluentBit: !Equals [!Ref EnableFargateFluentBit, "true"]
+Outputs:
+  AddonsInstalled:
+    Value: !Join [ ",", [ !Ref CorednsAddon, !Ref VpcCniAddon, !Ref KubeProxyAddon ] ]
