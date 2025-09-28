@@ -70,3 +70,30 @@ def run_verimove():
 
     except Exception as e:
         logging.exception("Error while running Verimove job: %s", str(e))
+
+
+
+
+import subprocess
+import logging
+
+def run_verimove():
+    batch_file = r"C:\data\add_mass\address_mast.bat"   # full path to your .bat file
+
+    logging.info("Running Verimove batch file: %s", batch_file)
+
+    try:
+        # run batch file
+        result = subprocess.run(batch_file, capture_output=True, text=True, shell=True)
+
+        if result.returncode == 0:
+            logging.info("Verimove batch completed successfully.")
+            logging.info("STDOUT: %s", result.stdout.strip())
+        else:
+            logging.error("Verimove batch failed with exit code %s", result.returncode)
+            logging.error("STDOUT: %s", result.stdout.strip())
+            logging.error("STDERR: %s", result.stderr.strip())
+
+    except Exception as e:
+        logging.exception("Error while running Verimove batch: %s", str(e))
+
