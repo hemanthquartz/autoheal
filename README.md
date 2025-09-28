@@ -97,3 +97,10 @@ def run_verimove():
     except Exception as e:
         logging.exception("Error while running Verimove batch: %s", str(e))
 
+
+
+"commands": [
+  "if (Test-Path 'D:\\VeriMove\\Input') { & 'C:\\Program Files\\Python311\\python.exe' 'C:\\data\\add_mass\\schedular\\add_mass_E2E.py'; exit 0 } else { exit 1 }"
+]
+
+
