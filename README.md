@@ -1,21 +1,40 @@
-Here's a summary of the call and next to-do tasks:
+import re
+import subprocess
+import datetime
+import time
+import logging
 
-Call Summary:
-The meeting focused on address data standardization, discussing the process of creating an address master table using MAX data and USPS validation. Key points include:
-- Installing Verimo and EPF downloader on a Windows box
-- Ensuring compliance with licensing and Nexus IQ requirements
-- Creating an address master table with standardized addresses
-- Implementing DPV (Delivery Point Validation) scoring
-- Automating monthly data processing and validation
+def wait_for_task_completion(task_name, poll_interval=5, timeout=900):
+    """Polls the scheduled task status until it is NOT 'Running' or until timeout."""
+    end_time = datetime.datetime.now() + datetime.timedelta(seconds=timeout)
 
-Next To-Do Tasks:
-1. Ensure Windows licensing compliance
-2. Add DPV score column to the address master table
-3. Install supporting tools (Python, AWS CLI, boto3)
-4. Set up Nexus IQ scanning for all Python packages
-5. Automate monthly USPS data download and Verimo processing
-6. Test incremental load process
-7. Create text file with address change deltas to send to MAX system
-8. Verify data loading and processing through log analysis
+    while datetime.datetime.now() < end_time:
+        result = subprocess.run(
+            ["schtasks", "/query", "/tn", task_name, "/fo", "LIST", "/v"],
+            capture_output=True,
+            text=True
+        )
 
-The ultimate goal is to create a fully automated, compliant system for address standardization with minimal human intervention.
+        if result.returncode != 0:
+            logging.error(f"Failed to query task '{task_name}': {result.stderr.strip()}")
+            return False
+
+        output = result.stdout
+        # Extract just the Status field (avoid matches like 'stop if still running')
+        m = re.search(r"(?mi)^\s*Status:\s*(.+?)\s*$", output)
+        status = m.group(1).strip().lower() if m else None
+
+        if not status:
+            logging.warning(f"Couldn't find Status for task '{task_name}'. Raw output:\n{output}")
+            time.sleep(poll_interval)
+            continue
+
+        if status != "running":
+            logging.info(f"Scheduled task '{task_name}' status is '{status}'. Treating as completed/not running.")
+            return True
+
+        logging.info(f"Scheduled task '{task_name}' is still running...")
+        time.sleep(poll_interval)
+
+    logging.warning(f"Scheduled task '{task_name}' did not complete within timeout ({timeout} seconds).")
+    return False
