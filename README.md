@@ -38,3 +38,35 @@ def wait_for_task_completion(task_name, poll_interval=5, timeout=900):
 
     logging.warning(f"Scheduled task '{task_name}' did not complete within timeout ({timeout} seconds).")
     return False
+
+
+
+
+
+
+
+import subprocess
+import logging
+
+def run_verimove():
+    verimove_exe = r"K:\Precisely\Verimove\mu.exe"
+    job_name = "samplejob"
+    def_file = r"C:\data\add_mass\addressmaster_tcs.def"
+
+    command = [verimove_exe, job_name, def_file]
+
+    logging.info("Running Verimove command: %s", " ".join(command))
+
+    try:
+        result = subprocess.run(command, capture_output=True, text=True)
+
+        if result.returncode == 0:
+            logging.info("Verimove job completed successfully.")
+            logging.info("STDOUT: %s", result.stdout.strip())
+        else:
+            logging.error("Verimove job failed with exit code %s", result.returncode)
+            logging.error("STDOUT: %s", result.stdout.strip())
+            logging.error("STDERR: %s", result.stderr.strip())
+
+    except Exception as e:
+        logging.exception("Error while running Verimove job: %s", str(e))
