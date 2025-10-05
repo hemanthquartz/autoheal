@@ -20,7 +20,7 @@ jobs:
           NAME="${{ github.event.client_payload.alert_name || 'unnamed' }}"
           echo "event_type=$TYPE, severity=$SEV, name=$NAME"
 
-      - name: Example: run only for critical
+      - name: run only for critical
         if: ${{ github.event.client_payload.severity == 'critical' }}
         run: |
           echo "🔥 Critical remediation goes here"
