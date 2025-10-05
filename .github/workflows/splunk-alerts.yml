@@ -26,7 +26,7 @@ jobs:
           echo "🔥 Critical remediation goes here"
           # e.g., terraform apply, az cli, aws cli, kubectl, etc.
 
-      - name: Example: print key fields you’ll likely send
+      - name: print key fields you’ll likely send
         run: |
           echo "service=${{ github.event.client_payload.service }}"
           echo "host=${{ github.event.client_payload.host }}"
