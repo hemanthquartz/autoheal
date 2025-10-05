@@ -1,0 +1,33 @@
+name: Splunk Alert Handler
+on:
+  repository_dispatch:
+    types: [splunk_alert, splunk_search_alert, splunk_observability_alert]
+
+jobs:
+  handle:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show raw payload (for debugging)
+        run: |
+          echo "Action: ${{ github.event.action }}"
+          echo 'Client payload:'
+          echo '${{ toJson(github.event.client_payload) }}'
+
+      - name: Basic routing / validation
+        run: |
+          TYPE="${{ github.event.action }}"
+          SEV="${{ github.event.client_payload.severity || 'unknown' }}"
+          NAME="${{ github.event.client_payload.alert_name || 'unnamed' }}"
+          echo "event_type=$TYPE, severity=$SEV, name=$NAME"
+
+      - name: Example: run only for critical
+        if: ${{ github.event.client_payload.severity == 'critical' }}
+        run: |
+          echo "🔥 Critical remediation goes here"
+          # e.g., terraform apply, az cli, aws cli, kubectl, etc.
+
+      - name: Example: print key fields you’ll likely send
+        run: |
+          echo "service=${{ github.event.client_payload.service }}"
+          echo "host=${{ github.event.client_payload.host }}"
+          echo "ref=${{ github.event.client_payload.ref || 'main' }}"
