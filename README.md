@@ -1,47 +1,24 @@
-name: VM Ops
+$token = "ghp_yourPATtokenhere"
+$org = "your-github-org"
+$repo = "your-repo-name"
 
-on:
-  workflow_dispatch:
-    inputs:
-      action:
-        description: "What to do"
-        required: true
-        type: choice
-        options: [restart_service]
-      subscription_id:
-        description: "Azure Subscription ID"
-        required: true
-      resource_group:
-        description: "VM Resource Group"
-        required: true
-      vm_name:
-        description: "VM Name"
-        required: true
-      service_name:
-        description: "Windows service name (e.g., MSSQLSERVER)"
-        required: true
+$headers = @{
+    "Authorization" = "Bearer $token"
+    "Accept" = "application/vnd.github+json"
+    "X-GitHub-Api-Version" = "2022-11-28"
+}
 
-jobs:
-  restart-service:
-    if: ${{ inputs.action == 'restart_service' }}
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - name: Azure login (OIDC)
-        uses: azure/login@v2
-        with:
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ inputs.subscription_id }}
+$body = @{
+    event_type = "splunk_alert"
+    client_payload = @{
+        alert_name = "test_alert_from_windows"
+        severity   = "info"
+        service    = "demo"
+        host       = "winserver01"
+    }
+} | ConvertTo-Json -Depth 5
 
-      - name: Restart service on VM
-        uses: azure/CLI@v1
-        with:
-          inlineScript: |
-            az account set --subscription "${{ inputs.subscription_id }}"
-            az vm run-command invoke \
-              --resource-group "${{ inputs.resource_group }}" \
-              --name "${{ inputs.vm_name }}" \
-              --command-id RunPowerShellScript \
-              --scripts "Restart-Service -Name '${{ inputs.service_name }}' -Force; Get-Service -Name '${{ inputs.service_name }}'"
+Invoke-RestMethod -Uri "https://api.github.com/repos/$org/$repo/dispatches" `
+                  -Method Post `
+                  -Headers $headers `
+                  -Body $body
