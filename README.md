@@ -29,3 +29,15 @@ $body = @{
 $uri = "https://api.github.com/repos/$org/$repo/actions/workflows/$workflowFile/dispatches"
 
 Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body
+
+
+
+{
+  "ref": "askid",
+  "inputs": {
+    "action": "apply",
+    "target_environment": "blue",
+    "vm_name": "$result.host$",
+    "windows_service_name": "$result.windows_service_name$"
+  }
+}
