@@ -41,3 +41,14 @@ Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body
     "windows_service_name": "$result.windows_service_name$"
   }
 }
+
+
+{
+    "event_type": "splunk_alert",
+    "client_payload": {
+        "alert_name": "test_alert_from_windows",
+        "severity": "info",
+        "service": "demo",
+        "host": "winserver01"
+    }
+} 
