@@ -23,6 +23,10 @@ extensions:
   http_forwarder:
     ingress:
       endpoint: "${SPLUNK_LISTEN_INTERFACE}:6060"
+      # egress:
+      #   endpoint: "${SPLUNK_API_URL}"  # Use instead when sending to gateway
+      #   endpoint: "${SPLUNK_GATEWAY_URL}"
+
   smartagent:
     bundleDir: "${SPLUNK_BUNDLE_DIR}"
     collectd:
@@ -44,6 +48,8 @@ receivers:
       memory:
       paging:
       processes:
+        # System processes metrics, disabled by default
+        # process:
   jaeger:
     protocols:
       grpc:
@@ -58,8 +64,12 @@ receivers:
     protocols:
       grpc:
         endpoint: "${SPLUNK_LISTEN_INTERFACE}:4317"
+        # Uncomment below config to preserve incoming access token and use it instead of the token value set in exporter config
+        # include_metadata: true
       http:
         endpoint: "${SPLUNK_LISTEN_INTERFACE}:4318"
+        # Uncomment below config to preserve incoming access token and use it instead of the token value set in exporter config
+        # include_metadata: true
   prometheus/internal:
     config:
       scrape_configs:
@@ -76,9 +86,6 @@ receivers:
           action: drop
   smartagent/processlist:
     type: processlist
-  smartagent/windows_services:
-    type: windows_services
-    interval: 60s
   zipkin:
     endpoint: "${SPLUNK_LISTEN_INTERFACE}:9411"
 
@@ -88,22 +95,31 @@ processors:
     keys:
       - X-SF-TOKEN
   memory_limiter:
+    # Enabling the memory_limiter is strongly recommended for every pipeline.
+    # Configuration is based on the amount of memory allocated to the collector.
+    # For more information about memory limiter, see
+    # https://github.com/open-telemetry/opentelemetry-collector/blob/main/processor/memorylimiter/README.md
     check_interval: 2s
     limit_mib: ${SPLUNK_MEMORY_LIMIT_MIB}
   resourcedetection:
     detectors: [ec2, ecs, azure, system]
   resource/add_environment:
+    # Optional: The following processor can be used to add a default `deployment.environment` attribute to the logs and traces when it's not populated by instrumentation libraries.
+    # If enabled, make sure to enable this processor in a pipeline.
+    # For more information, see https://docs.splunk.com/Observability/gdi/opentelemetry/components/resource-processor.html
     attributes:
       - action: insert
         value: staging/production/...
         key: deployment.environment
   resource/add_mode:
+    # The following processor is used to add `otelcol.service.mode` attribute to the internal metrics
     attributes:
       - action: insert
         value: agent
         key: otelcol.service.mode
 
 exporters:
+  # Traces
   otlphttp:
     traces_endpoint: "${SPLUNK_INGEST_URL}/v2/trace/otlp"
     headers:
@@ -111,12 +127,17 @@ exporters:
     auth:
       authenticator: headers_setter
 
+  # Metrics + Events
   signalfx:
     access_token: "${SPLUNK_ACCESS_TOKEN}"
     api_url: "${SPLUNK_API_URL}"
     ingest_url: "${SPLUNK_INGEST_URL}"
+    # Use instead when sending to gateway
+    #ingest_url: http://${SPLUNK_GATEWAY_URL}:6060
+    #ingest_url: http://${SPLUNK_GATEWAY_URL}:9943
     sync_host_metadata: true
 
+  # Logs
   splunk_hec:
     token: "${SPLUNK_HEC_TOKEN}"
     endpoint: "${SPLUNK_HEC_URL}"
@@ -125,10 +146,12 @@ exporters:
     profiling_data_enabled: false
     log_data_enabled: false
 
+  # Profiling
   splunk_hec/profiling:
     token: "${SPLUNK_ACCESS_TOKEN}"
     endpoint: "${SPLUNK_INGEST_URL}/v1/log"
 
+  # Send to gateway
   otlp/gateway:
     endpoint: "${SPLUNK_GATEWAY_URL}:4317"
     tls:
@@ -136,6 +159,7 @@ exporters:
     auth:
       authenticator: headers_setter
 
+# Debug
 debug:
   verbosity: detailed
 
@@ -146,22 +170,28 @@ service:
       receivers: [jaeger, otlp, zipkin]
       processors: [memory_limiter, batch, resourcedetection, resource/add_environment]
       exporters: [otlphttp, signalfx]
+      #exporters: [gateway, signalfx]
     metrics:
       receivers: [hostmetrics, otlp]
       processors: [memory_limiter, batch, resourcedetection]
       exporters: [signalfx]
+      #exporters: [otlp/gateway]
     metrics/internal:
       receivers: [prometheus/internal]
       processors: [memory_limiter, batch, resourcedetection, resource/add_mode]
+      # when sending to gateway, at least one metrics pipeline needs
+      # to use signalfx exporter so host metadata gets emitted
       exporters: [signalfx]
     logs/signalfx:
-      receivers: [smartagent/processlist, smartagent/windows_services]
+      receivers: [smartagent/processlist]
       processors: [memory_limiter, batch, resourcedetection]
       exporters: [signalfx]
     logs/entities:
+      # Receivers are dynamically added if discovery mode is enabled
       receivers: [nop]
       processors: [memory_limiter, batch, resourcedetection]
       exporters: [otlphttp/entities]
+      #exporters: [otlp/gateway]
     logs:
       receivers: [fluentforward, otlp]
       processors:
@@ -170,3 +200,4 @@ service:
         - resourcedetection
         - resource/add_environment
       exporters: [splunk_hec, splunk_hec/profiling]
+      #exporters: [otlp/gateway]
