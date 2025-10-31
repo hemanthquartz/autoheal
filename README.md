@@ -7,13 +7,13 @@
 # - SPLUNK_BUNDLE_DIR: The path to the Smart Agent bundle, e.g. /usr/lib/splunk-otel-collector/agent-bundle
 # - SPLUNK_COLLECTD_DIR: The path to the collected config directory for the Smart Agent, e.g. /usr/lib/splunk-otel-collector/agent-bundle/run/collectd
 # - SPLUNK_HEC_TOKEN: The Splunk HEC authentication token
-# - SPLUNK_HEC_URL: The Splunk HEC endpoint URL, e.g. https://http-inputs-acme.splunkcloud.com/services/collector
+# - SPLUNK_HEC_URL: The Splunk HEC endpoint URL, e.g. https://http-inputs-acme.splunkcloud.com
 # - SPLUNK_INGEST_URL: The Splunk ingest URL, e.g. https://ingest.us0.signalfx.com
 # - SPLUNK_LISTEN_INTERFACE: The network interface the agent receivers listen on.
 
 extensions:
   headers_setter:
-    processors:
+    headers:
       - action: upsert
         key: X-SF-TOKEN
         from_context: X-SF-TOKEN
@@ -23,14 +23,13 @@ extensions:
   http_forwarder:
     ingress:
       endpoint: "${SPLUNK_LISTEN_INTERFACE}:6060"
-    egress:
-      endpoint: "${SPLUNK_API_URL}"
   smartagent:
     bundleDir: "${SPLUNK_BUNDLE_DIR}"
     collectd:
       configDir: "${SPLUNK_COLLECTD_DIR}"
   zpages:
     endpoint: "${SPLUNK_LISTEN_INTERFACE}:55679"
+    enabled: true
 
 receivers:
   fluentforward:
@@ -43,7 +42,6 @@ receivers:
       filesystem:
       load:
       memory:
-      network:
       paging:
       processes:
   jaeger:
@@ -60,10 +58,8 @@ receivers:
     protocols:
       grpc:
         endpoint: "${SPLUNK_LISTEN_INTERFACE}:4317"
-        include_metadata: true
       http:
         endpoint: "${SPLUNK_LISTEN_INTERFACE}:4318"
-        include_metadata: true
   prometheus/internal:
     config:
       scrape_configs:
@@ -73,43 +69,41 @@ receivers:
             - targets: ["0.0.0.0:8888"]
       metric_relabel_configs:
         - source_labels: [ __name__ ]
-          regex: "promhttp_metric_handler_errors.*"
+          regex: 'promhttp_metric_handler_errors.*'
           action: drop
         - source_labels: [ __name__ ]
-          regex: "otelcol_processor_batch.*"
+          regex: 'otelcol_processor_batch.*'
           action: drop
   smartagent/processlist:
     type: processlist
+  smartagent/windows_services:
+    type: windows_services
+    interval: 60s
   zipkin:
     endpoint: "${SPLUNK_LISTEN_INTERFACE}:9411"
 
-  # Added receiver to collect Windows service status
-  smartagent/win_services:
-    type: windows-service
-    intervalSeconds: 60
-    sendAll: true
-
 processors:
   batch:
+  metadata/keys:
+    keys:
+      - X-SF-TOKEN
   memory_limiter:
     check_interval: 2s
     limit_mib: ${SPLUNK_MEMORY_LIMIT_MIB}
   resourcedetection:
-    detectors: [env, ec2, ecs, azure, system]
-    override: true
+    detectors: [ec2, ecs, azure, system]
   resource/add_environment:
     attributes:
       - action: insert
+        value: staging/production/...
         key: deployment.environment
-        value: staging
   resource/add_mode:
     attributes:
       - action: insert
-        key: otelcol.service.mode
         value: agent
+        key: otelcol.service.mode
 
 exporters:
-  # Traces
   otlphttp:
     traces_endpoint: "${SPLUNK_INGEST_URL}/v2/trace/otlp"
     headers:
@@ -117,31 +111,24 @@ exporters:
     auth:
       authenticator: headers_setter
 
-  # Metrics + Events
   signalfx:
     access_token: "${SPLUNK_ACCESS_TOKEN}"
     api_url: "${SPLUNK_API_URL}"
     ingest_url: "${SPLUNK_INGEST_URL}"
-    # Use instead when sending to gateway
-    # ingest_url: http://${SPLUNK_GATEWAY_URL}:6060
-    # ingest_url: http://${SPLUNK_GATEWAY_URL}:9943
     sync_host_metadata: true
 
-  # Logs
   splunk_hec:
     token: "${SPLUNK_HEC_TOKEN}"
     endpoint: "${SPLUNK_HEC_URL}"
     source: "otel"
     sourcetype: "otel"
     profiling_data_enabled: false
+    log_data_enabled: false
 
-  # Profiling
   splunk_hec/profiling:
     token: "${SPLUNK_ACCESS_TOKEN}"
     endpoint: "${SPLUNK_INGEST_URL}/v1/log"
-    log_data_enabled: false
 
-  # Send to gateway
   otlp/gateway:
     endpoint: "${SPLUNK_GATEWAY_URL}:4317"
     tls:
@@ -159,36 +146,22 @@ service:
       receivers: [jaeger, otlp, zipkin]
       processors: [memory_limiter, batch, resourcedetection, resource/add_environment]
       exporters: [otlphttp, signalfx]
-      # exporters: [otlp/gateway, signalfx]
-
     metrics:
       receivers: [hostmetrics, otlp]
       processors: [memory_limiter, batch, resourcedetection]
       exporters: [signalfx]
-      # exporters: [otlp/gateway]
-
     metrics/internal:
       receivers: [prometheus/internal]
       processors: [memory_limiter, batch, resourcedetection, resource/add_mode]
       exporters: [signalfx]
-
-    # Added pipeline to send Windows service metrics
-    metrics/windows_services:
-      receivers: [smartagent/win_services]
-      processors: [memory_limiter, batch, resourcedetection]
-      exporters: [signalfx]
-
     logs/signalfx:
-      receivers: [smartagent/processlist]
+      receivers: [smartagent/processlist, smartagent/windows_services]
       processors: [memory_limiter, batch, resourcedetection]
       exporters: [signalfx]
-
     logs/entities:
       receivers: [nop]
       processors: [memory_limiter, batch, resourcedetection]
       exporters: [otlphttp/entities]
-      # exporters: [otlp/gateway]
-
     logs:
       receivers: [fluentforward, otlp]
       processors:
@@ -197,4 +170,3 @@ service:
         - resourcedetection
         - resource/add_environment
       exporters: [splunk_hec, splunk_hec/profiling]
-      # exporters: [otlp/gateway]
