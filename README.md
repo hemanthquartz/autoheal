@@ -1,30 +1,27 @@
-  handle:
-    runs-on: uhg-runner
-    outputs:
-      service_name:   ${{ steps.extract.outputs.service_name }}
-      vm_name:        ${{ steps.extract.outputs.vm_name }}
-      resource_group: ${{ steps.extract.outputs.resource_group }}
-      signal_value:   ${{ steps.extract.outputs.signal_value }}
-
-    steps:
-      - name: Show raw payload (for debugging)
-        run: |
-          echo "Action: ${{ github.event.action }}"
-          echo "Client payload:"
-          echo '${{ toJson(github.event.client_payload) }}' | jq .
-
       - name: Extract service and VM details
         id: extract
         shell: bash
         run: |
-          dims='${{ toJson(github.event.client_payload.dimensions) }}'
-          echo "Raw dimensions: $dims"
+          # Get the dimensions string (it's a string, not JSON)
+          dims='${{ github.event.client_payload.dimensions }}'
+          echo "Raw dimensions string: $dims"
 
-          service_name=$(echo "$dims" | jq -r '."service_name" // empty')
-          vm_name=$(echo "$dims" | jq -r '."azure.vm.name" // empty')
-          resource_group=$(echo "$dims" | jq -r '."azure.resourcegroup.name" // empty')
+          # Remove { and } if present
+          clean_dims=$(echo "$dims" | sed 's/^{//; s/}$//')
+
+          # Parse key=value pairs using awk
+          service_name=$(echo "$clean_dims" | tr ',' '\n' | grep 'service_name=' | cut -d'=' -f2- | xargs)
+          vm_name=$(echo "$clean_dims" | tr ',' '\n' | grep 'azure\.vm\.name=' | cut -d'=' -f2- | xargs)
+          resource_group=$(echo "$clean_dims" | tr ',' '\n' | grep 'azure\.resourcegroup\.name=' | cut -d'=' -f2- | xargs)
           signal_value='${{ github.event.client_payload.signalValue }}'
 
+          # Debug
+          echo "service_name=$service_name"
+          echo "vm_name=$vm_name"
+          echo "resource_group=$resource_group"
+          echo "signal_value=$signal_value"
+
+          # Set outputs
           echo "service_name=$service_name" >> "$GITHUB_OUTPUT"
           echo "vm_name=$vm_name" >> "$GITHUB_OUTPUT"
           echo "resource_group=$resource_group" >> "$GITHUB_OUTPUT"
