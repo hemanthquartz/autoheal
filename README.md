@@ -3,11 +3,12 @@
         shell: bash
         run: |
           dims='${{ github.event.client_payload.dimensions }}'
+          echo "Raw dimensions: $dims"
 
-          # Correct field names from the payload image
+          # Extract correct values from payload string
           service_name=$(echo "$dims" | sed -n 's/.*service_name=\([^,}]*\).*/\1/p')
           vm_name=$(echo "$dims" | sed -n 's/.*azure\.vm\.name=\([^,}]*\).*/\1/p')
-          resource_group=$(echo "$dims" | sed -n 's/.*cloud\.resourcegroup\.name=\([^,}]*\).*/\1/p')
+          resource_group=$(echo "$dims" | sed -n 's/.*azure\.resourcegroup\.name=\([^,}]*\).*/\1/p')
 
           echo "Parsed service_name=$service_name"
           echo "Parsed vm_name=$vm_name"
