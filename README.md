@@ -1,7 +1,5 @@
-jobs:
   handle:
     runs-on: uhg-runner
-
     outputs:
       service_name:   ${{ steps.extract.outputs.service_name }}
       vm_name:        ${{ steps.extract.outputs.vm_name }}
@@ -13,81 +11,21 @@ jobs:
         run: |
           echo "Action: ${{ github.event.action }}"
           echo "Client payload:"
-          echo '${{ toJson(github.event.client_payload) }}'
+          echo '${{ toJson(github.event.client_payload) }}' | jq .
 
       - name: Extract service and VM details
         id: extract
         shell: bash
         run: |
-          # NOTE: field name is **dimensionsS**
-          dims='${{ github.event.client_payload.dimensionsS }}'
-          echo "Raw dimensionsS: $dims"
+          dims='${{ toJson(github.event.client_payload.dimensions) }}'
+          echo "Raw dimensions: $dims"
 
-          # Pull out values from the comma-separated key=value string
-          service_name=$(echo "$dims" | sed -n 's/.*service_name=\([^,}]*\).*/\1/p')
-          vm_name=$(echo "$dims" | sed -n 's/.*azure\.vm\.name=\([^,}]*\).*/\1/p')
-          resource_group=$(echo "$dims" | sed -n 's/.*azure\.resourcegroup\.name=\([^,}]*\).*/\1/p')
+          service_name=$(echo "$dims" | jq -r '."service_name" // empty')
+          vm_name=$(echo "$dims" | jq -r '."azure.vm.name" // empty')
+          resource_group=$(echo "$dims" | jq -r '."azure.resourcegroup.name" // empty')
+          signal_value='${{ github.event.client_payload.signalValue }}'
 
-          echo "Parsed service_name=$service_name"
-          echo "Parsed vm_name=$vm_name"
-          echo "Parsed resource_group=$resource_group"
-
-          echo "service_name=$service_name"        >> "$GITHUB_OUTPUT"
-          echo "vm_name=$vm_name"                  >> "$GITHUB_OUTPUT"
-          echo "resource_group=$resource_group"    >> "$GITHUB_OUTPUT"
-
-          # Top-level field from payload
-          echo "signal_value=${{ github.event.client_payload.signalValue }}" >> "$GITHUB_OUTPUT"
-
-  restart-service:
-    needs: handle
-
-    # Run only when signalValue exists AND < 4 (skip when == 4)
-    if: ${{ needs.handle.outputs.signal_value != '' && fromJson(needs.handle.outputs.signal_value) < 4 }}
-
-    runs-on: uhg-runner
-    permissions:
-      id-token: write
-      contents: read
-
-    env:
-      AZURE_SUBSCRIPTION_ID: 5204df69-30ab-4345-a9d2-ddb0ac139a3c
-      SERVICE_NAME:   ${{ needs.handle.outputs.service_name }}
-      VM_NAME:        ${{ needs.handle.outputs.vm_name }}
-      RESOURCE_GROUP: ${{ needs.handle.outputs.resource_group }}
-
-    steps:
-      - name: Pre-check parsed values
-        run: |
-          echo "SERVICE_NAME=$SERVICE_NAME"
-          echo "VM_NAME=$VM_NAME"
-          echo "RESOURCE_GROUP=$RESOURCE_GROUP"
-          echo "signalValue=${{ needs.handle.outputs.signal_value }}"
-
-          if [ -z "$SERVICE_NAME" ] || [ -z "$VM_NAME" ] || [ -z "$RESOURCE_GROUP" ]; then
-            echo "ERROR: One or more required values are empty. Aborting before Azure CLI call."
-            exit 1
-          fi
-
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          creds: >
-            {"clientId":"e976a6f2-bb3f-4767-86c8-e18b3136b843",
-             "clientSecret":"${{ secrets.PDE_SVC_INTEGRATION_HUB_NONPROD_CLIENT_SECRET }}",
-             "subscriptionId":"${{ env.AZURE_SUBSCRIPTION_ID }}",
-             "tenantId":"db05faca-c82a-4b9d-b9c5-0f64b6755421"}
-
-      - name: Restart service on VM (modular)
-        uses: azure/CLI@v1
-        with:
-          inlineScript: |
-            echo "Restarting service '$SERVICE_NAME' on VM '$VM_NAME' in RG '$RESOURCE_GROUP'"
-
-            az account set --subscription "$AZURE_SUBSCRIPTION_ID"
-
-            az vm run-command invoke \
-              --resource-group "$RESOURCE_GROUP" \
-              --name "$VM_NAME" \
-              --command-id RunPowerShellScript \
-              --scripts "Restart-Service -Name '$SERVICE_NAME' -Force; Get-Service -Name '$SERVICE_NAME'"
+          echo "service_name=$service_name" >> "$GITHUB_OUTPUT"
+          echo "vm_name=$vm_name" >> "$GITHUB_OUTPUT"
+          echo "resource_group=$resource_group" >> "$GITHUB_OUTPUT"
+          echo "signal_value=$signal_value" >> "$GITHUB_OUTPUT"
