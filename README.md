@@ -1,20 +1,21 @@
-Here is a polished, professional, and respectful version you can send internally within TCS:
+print("*********** Simple BMA sync with MERGE ***********")
 
-⸻
+merge_sql = """
+    MERGE INTO APPL_MNTH_END_SCH target
+    USING (SELECT 'BMA' AS PRCS_NAME,
+                  TO_DATE(:1,'MM/DD/YYYY') AS PRCS_DATE
+           FROM dual) src
+    ON (target.PRCS_NAME = src.PRCS_NAME
+        AND target.PRCS_DATE = src.PRCS_DATE)
+    WHEN NOT MATCHED THEN
+        INSERT (PRCS_NAME, PRCS_DATE, PRCS_FLAG, STATUS,
+                REC_CREN_DT, REC_CREN_USR_ID,
+                REC_LAST_UPD_DT, REC_LAST_UPD_USR_ID)
+        VALUES ('BMA', src.PRCS_DATE,
+                'Y','N',SYSDATE,USER,SYSDATE,USER)
+"""
 
-Hi ,
+for d in bma_dates:
+    cur.execute(merge_sql, [d])
 
-I hope you are doing well. I wanted to bring to your attention an important matter regarding my compensation. I have not received my salary payments since September 2025. My employer informed me that they have not been paid by the prime vendor during this same period, and therefore they have been unable to process my payments.
-
-I kindly request your support in helping escalate or coordinate this internally within TCS, so that my pending salary can be addressed at the earliest. This delay has put me in a difficult situation, and any assistance you can provide to help resolve this would be greatly appreciated.
-
-Please let me know if you need any additional details from my side.
-
-Thank you for your understanding and support.
-
-Warm regards,
-Hemanth
-
-⸻
-
-If you’d like, I can tailor it further for a specific person (HR, manager, finance, account team, vendor management, etc.).
+print("Merge complete — all missing BMA dates inserted automatically.")
