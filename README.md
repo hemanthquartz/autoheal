@@ -1,27 +1,15 @@
-if bma_dates:
-    merge_sql = """
-        MERGE INTO APPL_MNTH_END_SCH target
-        USING (SELECT 'BMA' AS PRCS_NAME,
-                      TO_DATE(:1,'MM/DD/YYYY') AS PRCS_DATE
-               FROM dual) src
-        ON (target.PRCS_NAME = src.PRCS_NAME
-            AND target.PRCS_DATE = src.PRCS_DATE)
-        WHEN NOT MATCHED THEN
-            INSERT (PRCS_NAME, PRCS_DATE, PRCS_FLAG, STATUS,
-                    REC_CREN_DT, REC_CREN_USR_ID,
-                    REC_LAST_UPD_DT, REC_LAST_UPD_USR_ID)
-            VALUES ('BMA', src.PRCS_DATE,
-                    'Y','N',SYSDATE,USER,SYSDATE,USER)
-    """
+# Create folder
+RUN mkdir -p /var/task/awssdk
 
-    inserted_count = 0   # <---- NEW: track ONLY new inserts
+# Download AWS ESB Client SDK from Nexus
+RUN curl -L -o /var/task/awssdk/aws-python-clientsdk-1.2.5.tar.gz \
+    "https://nexusrepository.fanniemae.com/nexus/content/repositories/releases/com/fanniemae/emp/aws-python-clientsdk/1.2.5/aws-python-clientsdk-1.2.5.tar.gz"
 
-    for d in bma_dates:
-        cur.execute(merge_sql, [d])
-        if cur.rowcount == 1:
-            inserted_count += 1
+# Optional: verify download
+RUN ls -lrth /var/task/awssdk/
 
-    print(f"Merge complete – {inserted_count} NEW BMA dates inserted automatically.")
+# Extract SDK
+RUN tar -xzf /var/task/awssdk/aws-python-clientsdk-1.2.5.tar.gz -C /var/task/awssdk/
 
-else:
-    print("****** No BMA calendar dates to process ******")
+# Confirm extraction
+RUN ls -lrth /var/task/awssdk/
