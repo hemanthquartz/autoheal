@@ -7,18 +7,9 @@ def github_workflow():
 
         dimensions_raw = data.get("dimensions")
 
-        if isinstance(dimensions_raw, str):
-            dimensions_raw = dimensions_raw.strip("{}")
-            dimensions = {}
-
-            for item in dimensions_raw.split(","):
-                if "=" in item:
-                    key, value = item.split("=", 1)
-                    dimensions[key.strip()] = value.strip()
-
-            data["dimensions"] = dimensions
-
-        return jsonify(data), 200
+        # If dimensions was originally a string, it has already been converted
+        # (based on your previous fix). Just return it.
+        return jsonify(dimensions_raw), 200
 
     except Exception as e:
         logger.exception("Error processing chat message")
