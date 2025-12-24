@@ -1,75 +1,26 @@
-def main():
-    bma_dates = get_bma_dates(holidays_file)
+To get the count of quote_id from your Athena table, use one of the following depending on what you need:
 
-    if not bma_dates:
-        print("***** No BMA calendar dates to process *****")
-        return
+1️⃣ Total number of rows (including duplicates)
 
-    # ---------------------------------------------
-    # 1. Extract distinct years from file
-    # ---------------------------------------------
-    bma_years = sorted({d.split("/")[-1] for d in bma_dates})
+SELECT COUNT(quote_id) AS quote_id_count
+FROM "insurance_master"."home_quote_master";
 
-    print(f"BMA Years identified from file: {', '.join(bma_years)}")
+2️⃣ Count of unique (distinct) quote IDs ✅ (most commonly needed)
 
-    cur = essdb_con.cursor()
+SELECT COUNT(DISTINCT quote_id) AS unique_quote_id_count
+FROM "insurance_master"."home_quote_master";
 
-    # ---------------------------------------------
-    # 2. Delete existing records for those years only
-    # ---------------------------------------------
-    delete_sql = """
-        DELETE FROM APPL_MNTH_END_SCH
-        WHERE PRCS_NAME = 'BMA'
-        AND EXTRACT(YEAR FROM PRCS_DATE) = :1
-    """
+3️⃣ Verify duplicates (optional but useful)
 
-    deleted_count = 0
-    for year in bma_years:
-        cur.execute(delete_sql, [year])
-        deleted_count += cur.rowcount
+SELECT quote_id, COUNT(*) AS cnt
+FROM "insurance_master"."home_quote_master"
+GROUP BY quote_id
+HAVING COUNT(*) > 1;
 
-    # ---------------------------------------------
-    # 3. Insert all BMA dates from file
-    # ---------------------------------------------
-    insert_sql = """
-        INSERT INTO APPL_MNTH_END_SCH (
-            PRCS_NAME,
-            PRCS_DATE,
-            PRCS_FLAG,
-            STATUS,
-            REC_CREN_DT,
-            REC_CREN_USR_ID,
-            REC_LAST_UPD_DT,
-            REC_LAST_UPD_USR_ID
-        )
-        VALUES (
-            'BMA',
-            TO_DATE(:1, 'MM/DD/YYYY'),
-            'Y',
-            'N',
-            SYSDATE,
-            USER,
-            SYSDATE,
-            USER
-        )
-    """
+4️⃣ Count with a condition (example)
 
-    inserted_count = 0
-    for d in bma_dates:
-        cur.execute(insert_sql, [d])
-        inserted_count += 1
+SELECT COUNT(DISTINCT quote_id)
+FROM "insurance_master"."home_quote_master"
+WHERE product = 'OHH';
 
-    # ---------------------------------------------
-    # 4. Commit once
-    # ---------------------------------------------
-    essdb_con.commit()
-
-    # ---------------------------------------------
-    # 5. Final audit log
-    # ---------------------------------------------
-    print(
-        f"BMA calendar refresh complete | "
-        f"Years processed: {', '.join(bma_years)} | "
-        f"Rows deleted: {deleted_count} | "
-        f"Rows inserted: {inserted_count}"
-    )
+If you tell me whether you want total vs unique or filtered by date / product / policy status, I’ll tailor the exact query.
