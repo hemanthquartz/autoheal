@@ -1,26 +1,44 @@
-To get the count of quote_id from your Athena table, use one of the following depending on what you need:
+Key Problems Discovered:
+1. Data Partitioning Inconsistencies
+- Incorrect relationship mapping between quote IDs, driver IDs, and vehicles
+- Inconsistent partition logic across different data domains
+- Unclear methods for capturing the latest records
 
-1️⃣ Total number of rows (including duplicates)
+2. Timestamp and Data Quality Issues
+- Missing appropriate timestamps for driver and vehicle data
+- Confusion around different timestamp types
+- Problems with employee number handling
+- Mismatched record counts between Hadoop and AWS data lake
 
-SELECT COUNT(quote_id) AS quote_id_count
-FROM "insurance_master"."home_quote_master";
+3. Data Migration Challenges
+- Potential data loss during migration
+- Inefficient data overwriting processes
 
-2️⃣ Count of unique (distinct) quote IDs ✅ (most commonly needed)
+Critical Action Items:
+1. Technical Investigations
+- Experiment with partition strategies for driver/vehicle tables
+- Add timestamp and ID-based partitioning
+- Compare output counts and document differences
+- Investigate "latest record" capture method
 
-SELECT COUNT(DISTINCT quote_id) AS unique_quote_id_count
-FROM "insurance_master"."home_quote_master";
+2. Data Quality Improvements
+- Check employee number prefix handling
+- Cleanse data at source, join logic, or base layer
+- Update source table pointers to production tables
+- Rerun home and auto code jobs
 
-3️⃣ Verify duplicates (optional but useful)
+3. Documentation and Communication
+- Consolidate meeting notes
+- Prepare detailed minutes and test documents
+- Communicate findings with Paulson and team
 
-SELECT quote_id, COUNT(*) AS cnt
-FROM "insurance_master"."home_quote_master"
-GROUP BY quote_id
-HAVING COUNT(*) > 1;
+Primary Assignees:
+- Sam: Overall technical direction
+- Team leads: Specific domain investigations
+- Hemanth: Documentation and communication
 
-4️⃣ Count with a condition (example)
-
-SELECT COUNT(DISTINCT quote_id)
-FROM "insurance_master"."home_quote_master"
-WHERE product = 'OHH';
-
-If you tell me whether you want total vs unique or filtered by date / product / policy status, I’ll tailor the exact query.
+Next Steps:
+- Complete technical experiments
+- Validate data quality
+- Document findings
+- Prepare recommendations for leadership
