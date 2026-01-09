@@ -1,28 +1,19 @@
+import sys
 import os
-import shutil
 
-SRC_DIR = "/opt/python"
-DST_DIR = "/var/task/awssdk"
+# --------------------------------------------------
+# Lambda path shim: make /opt/python behave like
+# /var/task/awssdk (legacy layout)
+# --------------------------------------------------
 
-def bootstrap_awssdk():
-    if not os.path.exists(SRC_DIR):
-        print(f"Source layer path missing: {SRC_DIR}")
-        return
+LAYER_AWSSDK_PATH = "/opt/python"
 
-    if not os.path.exists(DST_DIR):
-        os.makedirs(DST_DIR, exist_ok=True)
+if os.path.exists(LAYER_AWSSDK_PATH):
+    # 1. Pretend awssdk lives next to Consumer.py
+    sys.path.insert(0, LAYER_AWSSDK_PATH)
 
-        for item in os.listdir(SRC_DIR):
-            src_path = os.path.join(SRC_DIR, item)
-            dst_path = os.path.join(DST_DIR, item)
-
-            if os.path.isdir(src_path):
-                shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
-            else:
-                shutil.copy2(src_path, dst_path)
-
-        print(f"Copied {SRC_DIR} → {DST_DIR}")
-    else:
-        print(f"{DST_DIR} already exists")
-
-bootstrap_awssdk()
+    # 2. Also insert submodules (matches old os.listdir logic)
+    for item in os.listdir(LAYER_AWSSDK_PATH):
+        full_path = os.path.join(LAYER_AWSSDK_PATH, item)
+        if os.path.isdir(full_path):
+            sys.path.insert(0, full_path)
