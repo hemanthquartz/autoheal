@@ -1,44 +1,28 @@
-Key Problems Discovered:
-1. Data Partitioning Inconsistencies
-- Incorrect relationship mapping between quote IDs, driver IDs, and vehicles
-- Inconsistent partition logic across different data domains
-- Unclear methods for capturing the latest records
+import os
+import shutil
 
-2. Timestamp and Data Quality Issues
-- Missing appropriate timestamps for driver and vehicle data
-- Confusion around different timestamp types
-- Problems with employee number handling
-- Mismatched record counts between Hadoop and AWS data lake
+SRC_DIR = "/opt/python"
+DST_DIR = "/var/task/awssdk"
 
-3. Data Migration Challenges
-- Potential data loss during migration
-- Inefficient data overwriting processes
+def bootstrap_awssdk():
+    if not os.path.exists(SRC_DIR):
+        print(f"Source layer path missing: {SRC_DIR}")
+        return
 
-Critical Action Items:
-1. Technical Investigations
-- Experiment with partition strategies for driver/vehicle tables
-- Add timestamp and ID-based partitioning
-- Compare output counts and document differences
-- Investigate "latest record" capture method
+    if not os.path.exists(DST_DIR):
+        os.makedirs(DST_DIR, exist_ok=True)
 
-2. Data Quality Improvements
-- Check employee number prefix handling
-- Cleanse data at source, join logic, or base layer
-- Update source table pointers to production tables
-- Rerun home and auto code jobs
+        for item in os.listdir(SRC_DIR):
+            src_path = os.path.join(SRC_DIR, item)
+            dst_path = os.path.join(DST_DIR, item)
 
-3. Documentation and Communication
-- Consolidate meeting notes
-- Prepare detailed minutes and test documents
-- Communicate findings with Paulson and team
+            if os.path.isdir(src_path):
+                shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
+            else:
+                shutil.copy2(src_path, dst_path)
 
-Primary Assignees:
-- Sam: Overall technical direction
-- Team leads: Specific domain investigations
-- Hemanth: Documentation and communication
+        print(f"Copied {SRC_DIR} → {DST_DIR}")
+    else:
+        print(f"{DST_DIR} already exists")
 
-Next Steps:
-- Complete technical experiments
-- Validate data quality
-- Document findings
-- Prepare recommendations for leadership
+bootstrap_awssdk()
