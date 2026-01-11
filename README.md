@@ -3,8 +3,6 @@ from datetime import datetime
 import os
 import logging
 
-from langchain.text_splitters import RecursiveCharacterTextSplitter
-
 # ------------------------------------------------------------------------------
 # App & Logging
 # ------------------------------------------------------------------------------
@@ -14,16 +12,17 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------------------
-# RUNBOOK LOADING (FILE SYSTEM BASED)
+# RUNBOOK LOADING (PURE PYTHON)
 # ------------------------------------------------------------------------------
 
 def load_runbooks():
     """
-    Reads all markdown files from ./runbooks directory
-    Returns list of runbook documents
+    Load all runbooks from ./runbooks folder
+    No AI, no external libraries
     """
     runbooks = []
-    runbook_dir = os.path.join(os.path.dirname(__file__), "runbooks")
+    base_dir = os.path.dirname(__file__)
+    runbook_dir = os.path.join(base_dir, "runbooks")
 
     if not os.path.isdir(runbook_dir):
         logger.warning("Runbooks directory not found")
@@ -46,30 +45,26 @@ def load_runbooks():
 
 
 # ------------------------------------------------------------------------------
-# SEMANTIC MATCHING (NO VECTOR DB)
+# RUNBOOK MATCHING (AI VIA INPUT_CONTROLLER ONLY)
 # ------------------------------------------------------------------------------
 
 def match_runbooks(alert_summary, runbooks, input_controller, top_k=3):
     """
-    Uses AI reasoning (via input_controller) to select
-    the most relevant runbooks
+    Uses input_controller to evaluate relevance.
+    No embeddings, no vectors, no LangChain.
     """
-    matches = []
+    scored = []
 
     for rb in runbooks:
-        prompt = f"""
-You are an SRE assistant.
+        prompt = (
+            "You are an SRE assistant.\n\n"
+            f"Alert summary:\n{alert_summary}\n\n"
+            f"Runbook:\n{rb['content']}\n\n"
+            "Score relevance from 0 to 1.\n"
+            "Return ONLY the numeric score."
+        )
 
-Alert summary:
-{alert_summary}
-
-Runbook:
-{rb['content']}
-
-Rate relevance from 0 to 1.
-Return ONLY the numeric score.
-"""
-        score_resp = input_controller.process(
+        resp = input_controller.process(
             data={
                 "type": "user_message",
                 "content": prompt,
@@ -79,21 +74,21 @@ Return ONLY the numeric score.
             source="web_ui",
         )
 
-        raw_score = score_resp.get("processed_content", {}).get("content", "0")
+        raw_score = resp.get("processed_content", {}).get("content", "0")
 
         try:
             score = float(raw_score.strip())
         except Exception:
             score = 0.0
 
-        matches.append({
+        scored.append({
             "runbook": rb["name"],
             "content": rb["content"],
-            "score": score
+            "score": score,
         })
 
-    matches.sort(key=lambda x: x["score"], reverse=True)
-    return matches[:top_k]
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    return scored[:top_k]
 
 
 # ------------------------------------------------------------------------------
@@ -140,14 +135,10 @@ def github_workflow():
         param_resp = input_controller.process(
             data={
                 "type": "user_message",
-                "content": f"""
-Extract the following if present and return JSON only:
-- cluster
-- namespace
-- service
-From this alert:
-{alert_raw}
-""",
+                "content": (
+                    "Extract cluster, namespace, and service as JSON.\n\n"
+                    f"Alert:\n{alert_raw}"
+                ),
                 "timestamp": datetime.utcnow().isoformat(),
             },
             format_type="json",
@@ -159,14 +150,14 @@ From this alert:
         ).get("content", "{}")
 
         # -----------------------------
-        # 3. LOAD RUNBOOKS (LOCAL)
+        # 3. LOAD RUNBOOKS
         # -----------------------------
         runbooks = load_runbooks()
 
         # -----------------------------
         # 4. MATCH RUNBOOKS
         # -----------------------------
-        matched_runbooks = match_runbooks(
+        matched = match_runbooks(
             alert_summary,
             runbooks,
             input_controller
@@ -178,17 +169,13 @@ From this alert:
         proposal = {
             "summary": alert_summary,
             "params": extracted_params,
-            "suggested_runbooks": [
-                rb["content"] for rb in matched_runbooks
-            ],
+            "suggested_runbooks": [rb["content"] for rb in matched],
             "action": "Restart Service via GitHub Action",
         }
 
         return jsonify({
             "success": True,
-            "data": {
-                "proposal": proposal
-            }
+            "data": {"proposal": proposal}
         }), 200
 
     except Exception as e:
