@@ -1,79 +1,207 @@
+from flask import Flask, request, jsonify, current_app
+from datetime import datetime
+import os
 import logging
-from azure.identity import DefaultAzureCredential
-from azure.core.exceptions import ResourceNotFoundError, HttpResponseError
-from azure.mgmt.cosmosdb import CosmosDBManagementClient
-from azure.cosmos import CosmosClient, PartitionKey
 
-# keep your constants
-EMBEDDING_DIM = 1536
+from langchain.text_splitters import RecursiveCharacterTextSplitter
 
-def ensure_cosmos_once():
-    global _cosmos_ready, _cosmos_container
+# ------------------------------------------------------------------------------
+# App & Logging
+# ------------------------------------------------------------------------------
 
-    if _cosmos_ready:
-        return _cosmos_container
+app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-    subscription_id = "5204df69-30ab-4345-a9d2-ddb0ac139a3c"
-    rg_name = "pde-azure-cicd-ai-poc"
-    location = "eastus"
-    account_name = "runbooks-automation"               # already exists
-    db_name = "runbooks-automation-db"
-    container_name = "runbooks-automation-container"
+# ------------------------------------------------------------------------------
+# RUNBOOK LOADING (FILE SYSTEM BASED)
+# ------------------------------------------------------------------------------
 
-    cred = DefaultAzureCredential()
-    cmc = CosmosDBManagementClient(cred, subscription_id)
+def load_runbooks():
+    """
+    Reads all markdown files from ./runbooks directory
+    Returns list of runbook documents
+    """
+    runbooks = []
+    runbook_dir = os.path.join(os.path.dirname(__file__), "runbooks")
 
-    # 1) Verify Cosmos account exists (no create)
-    try:
-        acct = cmc.database_accounts.get(rg_name, account_name)
-        logging.info("Cosmos account found: %s", account_name)
-    except ResourceNotFoundError:
-        raise Exception(
-            f"Cosmos account '{account_name}' not found in RG '{rg_name}'. "
-            "Fix account_name/rg_name or create it outside this function."
+    if not os.path.isdir(runbook_dir):
+        logger.warning("Runbooks directory not found")
+        return runbooks
+
+    for fname in os.listdir(runbook_dir):
+        if not fname.endswith(".md"):
+            continue
+
+        path = os.path.join(runbook_dir, fname)
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        runbooks.append({
+            "name": fname,
+            "content": content
+        })
+
+    return runbooks
+
+
+# ------------------------------------------------------------------------------
+# SEMANTIC MATCHING (NO VECTOR DB)
+# ------------------------------------------------------------------------------
+
+def match_runbooks(alert_summary, runbooks, input_controller, top_k=3):
+    """
+    Uses AI reasoning (via input_controller) to select
+    the most relevant runbooks
+    """
+    matches = []
+
+    for rb in runbooks:
+        prompt = f"""
+You are an SRE assistant.
+
+Alert summary:
+{alert_summary}
+
+Runbook:
+{rb['content']}
+
+Rate relevance from 0 to 1.
+Return ONLY the numeric score.
+"""
+        score_resp = input_controller.process(
+            data={
+                "type": "user_message",
+                "content": prompt,
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+            format_type="json",
+            source="web_ui",
         )
-    except HttpResponseError as e:
-        # This is usually RBAC related (403), you want to SEE it clearly
-        raise Exception(f"Failed to read Cosmos account (RBAC?). Details: {e}")
 
-    # 2) Get endpoint + keys (keys require RBAC: listKeys)
+        raw_score = score_resp.get("processed_content", {}).get("content", "0")
+
+        try:
+            score = float(raw_score.strip())
+        except Exception:
+            score = 0.0
+
+        matches.append({
+            "runbook": rb["name"],
+            "content": rb["content"],
+            "score": score
+        })
+
+    matches.sort(key=lambda x: x["score"], reverse=True)
+    return matches[:top_k]
+
+
+# ------------------------------------------------------------------------------
+# MAIN WORKFLOW
+# ------------------------------------------------------------------------------
+
+@app.route("/github-workflow", methods=["POST"])
+def github_workflow():
     try:
-        keys = cmc.database_accounts.list_keys(rg_name, account_name)
-        key = keys.primary_master_key
-    except HttpResponseError as e:
-        raise Exception(
-            "Failed to list Cosmos keys. Your Function App Managed Identity likely "
-            "does NOT have permission to listKeys. Assign 'Contributor' (or "
-            "'Cosmos DB Account Contributor') on the Cosmos account or RG. "
-            f"Details: {e}"
+        # -----------------------------
+        # INPUT
+        # -----------------------------
+        data = request.get_json()
+        alert_raw = data.get("dimensions")
+
+        if not alert_raw:
+            return jsonify({
+                "success": False,
+                "error": "Alert payload missing"
+            }), 400
+
+        input_controller = current_app.input_controller
+
+        # -----------------------------
+        # 1. SUMMARIZE ALERT
+        # -----------------------------
+        summary_resp = input_controller.process(
+            data={
+                "type": "user_message",
+                "content": f"Summarize this Splunk alert:\n{alert_raw}",
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+            format_type="json",
+            source="splunk",
         )
 
-    endpoint = acct.document_endpoint or f"https://{account_name}.documents.azure.com:443/"
+        alert_summary = summary_resp.get(
+            "processed_content", {}
+        ).get("content", "No summary generated")
 
-    # 3) Create DB + container if missing
-    client = CosmosClient(endpoint, credential=key)
-    database = client.create_database_if_not_exists(id=db_name)
+        # -----------------------------
+        # 2. EXTRACT PARAMETERS
+        # -----------------------------
+        param_resp = input_controller.process(
+            data={
+                "type": "user_message",
+                "content": f"""
+Extract the following if present and return JSON only:
+- cluster
+- namespace
+- service
+From this alert:
+{alert_raw}
+""",
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+            format_type="json",
+            source="splunk",
+        )
 
-    indexing_policy = {
-        "indexingMode": "consistent",
-        "includedPaths": [{"path": "/*"}],
-        "vectorIndexes": [
-            {
-                "path": "/embedding",
-                "kind": "flat",
-                "dataType": "float32",
-                "dimensions": EMBEDDING_DIM,
+        extracted_params = param_resp.get(
+            "processed_content", {}
+        ).get("content", "{}")
+
+        # -----------------------------
+        # 3. LOAD RUNBOOKS (LOCAL)
+        # -----------------------------
+        runbooks = load_runbooks()
+
+        # -----------------------------
+        # 4. MATCH RUNBOOKS
+        # -----------------------------
+        matched_runbooks = match_runbooks(
+            alert_summary,
+            runbooks,
+            input_controller
+        )
+
+        # -----------------------------
+        # 5. BUILD PROPOSAL
+        # -----------------------------
+        proposal = {
+            "summary": alert_summary,
+            "params": extracted_params,
+            "suggested_runbooks": [
+                rb["content"] for rb in matched_runbooks
+            ],
+            "action": "Restart Service via GitHub Action",
+        }
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "proposal": proposal
             }
-        ],
-    }
+        }), 200
 
-    container = database.create_container_if_not_exists(
-        id=container_name,
-        partition_key=PartitionKey(path="/runbook"),
-        indexing_policy=indexing_policy,
-        offer_throughput=400,
-    )
+    except Exception as e:
+        logger.error(f"Workflow error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Internal server error"
+        }), 500
 
-    _cosmos_ready = True
-    _cosmos_container = container
-    return container
+
+# ------------------------------------------------------------------------------
+# APP START
+# ------------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080)
