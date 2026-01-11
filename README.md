@@ -1,35 +1,53 @@
-# Restart Windows Service on Azure VM
+Below is **everything (corrections + debugging additions)** in one go: **updated `load_runbooks()`**, **updated `match_runbooks()`**, and **the debugging additions inside `github_workflow()`**, plus **2 small helper functions**.
 
-Keywords: restart, windows, service, vm, azure, win_services, telegraf
+✅ This will tell you *exactly* why no runbook was selected:
 
-## When to use
-Use when a Splunk/SignalFx alert indicates a Windows service is unhealthy on an Azure VM.
+* Were runbooks loaded?
+* What keywords were extracted?
+* What “match text” was built from summary + params?
+* Which runbooks got which score?
+* Which keywords matched (or not)?
 
-## Required parameters (from alert dimensions)
-- azure_resource_id (full Azure resource ID of the VM)
-- service_name (Windows Service name, e.g., AppReadiness)
+---
 
-## Action
-Restart the service using Azure VM Run Command (PowerShell).
+## 0) Add these imports (if not already present)
 
-## Validation
-- Service status becomes Running.
-- Alert clears (or downstream health check recovers).
+```python
+import os, re, glob, json
+from flask import request, jsonify, current_app
+```
 
+---
 
-import re
+## 1) Add these helpers (new)
+
+```python
+def _normalize_for_match(s: str) -> str:
+    """
+    Normalize strings for keyword matching:
+    - lowercase
+    - replace non-alphanumeric with spaces
+    - collapse whitespace
+    This fixes issues like AppReadiness vs appreadiness, punctuation, etc.
+    """
+    if not s:
+        return ""
+    s = s.lower()
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    return " ".join(s.split())
+
 
 def parse_dimensions_kv(dimensions: str) -> dict:
     """
-    Parse a SignalFx-style 'dimensions' string:
-    "{k=v, a=b, ...}" into dict. Splits on commas, then first '='.
+    Parse a SignalFx-style 'dimensions' blob:
+    "{k=v, a=b, ...}" -> dict. Splits on commas, then first '='.
+
+    NOTE: This is simple and works for your current alert format.
     """
     if not dimensions:
         return {}
 
     s = dimensions.strip()
-
-    # Strip wrapping braces if present
     if s.startswith("{") and s.endswith("}"):
         s = s[1:-1]
 
@@ -44,168 +62,228 @@ def parse_dimensions_kv(dimensions: str) -> dict:
         if k:
             out[k] = v
     return out
+```
 
+---
 
+## 2) Replace your `load_runbooks()` with this (updated + debug)
 
+```python
+def load_runbooks():
+    """
+    Load Markdown runbooks from local './runbooks/*.md'
+
+    Returns: list of dicts with keys: {id, title, content, keywords}
+    Debug: Logs what was loaded and what keywords were derived.
+    """
+    runbooks_dir = os.path.join(os.getcwd(), "runbooks")
+    files = glob.glob(os.path.join(runbooks_dir, "*.md"))
+
+    logger.info(f"[RUNBOOK_DEBUG] Looking for runbooks in: {runbooks_dir}")
+    logger.info(f"[RUNBOOK_DEBUG] Found {len(files)} runbook files: {files}")
+
+    runbooks = []
+    for fpath in files:
+        try:
+            with open(fpath, "r", encoding="utf-8") as fh:
+                content = fh.read()
+        except Exception as e:
+            logger.warning(f"[RUNBOOK_DEBUG] Skipping unreadable runbook file '{fpath}': {e}")
+            continue
+
+        # id from filename (without extension)
+        fname = os.path.basename(fpath)
+        rb_id = os.path.splitext(fname)[0]
+
+        # Title: first H1 '# ' if present; else filename-derived
+        title = None
+        for line in content.splitlines():
+            l = line.lstrip("\ufeff").strip()
+            if l.startswith("# "):
+                title = l[2:].strip()
+                break
+        if not title:
+            title = re.sub(r"[_\-]+", " ", rb_id).strip().title()
+
+        # Base keywords from filename tokens
+        raw_tokens = re.split(r"[^A-Za-z0-9]+", rb_id)
+        keywords = [t.lower() for t in raw_tokens if t]
+
+        # NEW: add title tokens too (helps a lot)
+        title_tokens = re.split(r"[^A-Za-z0-9]+", title)
+        keywords.extend([t.lower() for t in title_tokens if t])
+
+        # OPTIONAL: enrich keywords from a 'Keywords:' line
+        m = re.search(r"(?i)^keywords:\s*(.+)$", content, flags=re.MULTILINE)
+        if m:
+            extra = [k.strip().lower() for k in m.group(1).split(",") if k.strip()]
+            keywords.extend(extra)
+
+        # Normalize/dedupe keywords
+        keywords = sorted(set([k for k in keywords if k]))
+
+        rb = {
+            "id": rb_id,
+            "title": title,
+            "content": content,
+            "keywords": keywords
+        }
+        runbooks.append(rb)
+
+        # Debug logs (do NOT print whole content)
+        logger.info(
+            f"[RUNBOOK_DEBUG] Loaded runbook | id={rb_id} | title={title} "
+            f"| keywords={keywords} | content_len={len(content)}"
+        )
+
+    logger.info(f"[RUNBOOK_DEBUG] Total loaded runbooks: {len(runbooks)}")
+    return runbooks
+```
+
+---
+
+## 3) Replace your `match_runbooks()` with this (updated + deep debug)
+
+```python
 def match_runbooks(alert_summary, params, runbooks):
     """
     Deterministic matching: keyword scoring against summary + ALL param values.
+    Debug: logs scoring, matched keywords, and the final decision.
     """
-    haystack_parts = [alert_summary or ""]
+    logger.info("[RUNBOOK_DEBUG] --- match_runbooks START ---")
+
+    # Build haystack from summary + param values
+    parts = []
+    if alert_summary:
+        parts.append(str(alert_summary))
+
     if isinstance(params, dict):
-        for v in params.values():
+        for k, v in params.items():
             if v is None:
                 continue
-            haystack_parts.append(str(v))
-    text_l = " ".join(haystack_parts).lower()
+            parts.append(str(v))
+            logger.info(f"[RUNBOOK_DEBUG] Match input param | {k}={v}")
+
+    haystack_raw = " ".join(parts)
+    haystack = _normalize_for_match(haystack_raw)
+
+    logger.info(f"[RUNBOOK_DEBUG] Alert summary: {alert_summary}")
+    logger.info(f"[RUNBOOK_DEBUG] Haystack(raw): {haystack_raw}")
+    logger.info(f"[RUNBOOK_DEBUG] Haystack(norm): {haystack}")
+
+    if not runbooks:
+        logger.warning("[RUNBOOK_DEBUG] No runbooks provided to match_runbooks()")
+        return []
 
     ranked = []
     for rb in runbooks:
         score = 0
-        for kw in rb.get("keywords", []):
-            if kw.lower() in text_l:
+        matched_keywords = []
+
+        rb_keywords = rb.get("keywords", []) or []
+        if not rb_keywords:
+            logger.warning(f"[RUNBOOK_DEBUG] Runbook '{rb.get('id')}' has NO keywords")
+        else:
+            logger.info(f"[RUNBOOK_DEBUG] Runbook '{rb.get('id')}' keywords={rb_keywords}")
+
+        for kw in rb_keywords:
+            kw_norm = _normalize_for_match(kw)
+            if kw_norm and kw_norm in haystack:
                 score += 1
-        ranked.append((score, rb))
+                matched_keywords.append(kw)
 
+        ranked.append((score, rb, matched_keywords))
+        logger.info(
+            f"[RUNBOOK_DEBUG] Score | runbook={rb.get('id')} | score={score} | matched={matched_keywords}"
+        )
+
+    # Sort by score desc
     ranked.sort(key=lambda x: x[0], reverse=True)
-    filtered = [rb for score, rb in ranked if score > 0] or ([ranked[0][1]] if ranked else [])
+
+    # Filter to score>0; if none, return empty (so you can see the failure clearly)
+    filtered = [rb for score, rb, _mk in ranked if score > 0]
+
+    logger.info(f"[RUNBOOK_DEBUG] Ranked(top5)={[(s, r.get('id')) for s, r, _ in ranked[:5]]}")
+    logger.info(f"[RUNBOOK_DEBUG] Filtered matches (score>0)={[rb.get('id') for rb in filtered]}")
+
+    logger.info("[RUNBOOK_DEBUG] --- match_runbooks END ---")
     return filtered[:3]
+```
 
+> If you want “always select something”, tell me and I’ll add a controlled fallback.
+> For now, this keeps it strict so the debug clearly shows why selection is empty.
 
+---
 
-import os, json, urllib.request, urllib.error
+## 4) Add these debug additions inside `github_workflow()` (the key points)
 
-def github_repository_dispatch(event_type: str, client_payload: dict):
-    token = os.getenv("GITHUB_TOKEN")
-    owner = os.getenv("GITHUB_OWNER")
-    repo = os.getenv("GITHUB_REPO")
+Below is a **drop-in block** to add/adjust inside your route **after you compute `extracted_params` and `alert_summary`** and before you build `proposal`.
 
-    if not (token and owner and repo):
-        raise RuntimeError("Missing GITHUB_TOKEN / GITHUB_OWNER / GITHUB_REPO in app settings.")
+```python
+# -------------------------
+# RUNBOOK LOAD + MATCH (with debug)
+# -------------------------
+runbooks = load_runbooks()
+logger.info(f"[RUNBOOK_DEBUG] github_workflow: loaded_runbooks={len(runbooks)}")
 
-    url = f"https://api.github.com/repos/{owner}/{repo}/dispatches"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "Content-Type": "application/json",
-        "User-Agent": "runbook-orchestrator"
-    }
+# Add this: show normalized match inputs (helps a LOT)
+logger.info(f"[RUNBOOK_DEBUG] github_workflow: alert_summary(norm)={_normalize_for_match(alert_summary)}")
+logger.info(f"[RUNBOOK_DEBUG] github_workflow: params={extracted_params}")
 
-    payload = {"event_type": event_type, "client_payload": client_payload}
-    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+matched = match_runbooks(
+    alert_summary=alert_summary,
+    params=extracted_params,
+    runbooks=runbooks
+)
 
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            # GitHub often returns 204 for dispatch
-            return resp.status
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"GitHub dispatch failed: {e.code} {e.read().decode('utf-8', errors='ignore')}")
+logger.info(f"[RUNBOOK_DEBUG] github_workflow: matched_count={len(matched)}")
+for rb in matched:
+    logger.info(f"[RUNBOOK_DEBUG] github_workflow: matched_runbook id={rb.get('id')} title={rb.get('title')}")
 
+suggested_runbooks = [
+    {"id": rb["id"], "title": rb["title"], "content": rb["content"]}
+    for rb in matched
+] if matched else []
 
+selected_runbook = suggested_runbooks[0] if suggested_runbooks else None
 
-@api_bp.route("/github_workflow", methods=["POST"])
-def github_workflow():
-    try:
-        data = request.get_json(silent=True) or {}
-        alert_raw = data.get("dimensions")
-        if not alert_raw:
-            return jsonify({"success": False, "error": "Alert payload missing"}), 400
+if not selected_runbook:
+    logger.warning(
+        "[RUNBOOK_DEBUG] No runbook selected. "
+        f"loaded={len(runbooks)} matched={len(matched)} "
+        "=> likely keyword mismatch. Check RUNBOOK_DEBUG scoring lines."
+    )
+```
 
-        # 0) Parse dimensions deterministically
-        dims = parse_dimensions_kv(alert_raw)
+---
 
-        # 1) LLM summary (keep your existing approach)
-        input_controller = current_app.input_controller
-        instruction = build_instruction_for_structured_output(alert_raw)
+# 5) The most common reason this still won’t match
 
-        llm_payload = {
-            "type": "user_message",
-            "content": instruction,
-            "timestamp": _now_iso_utc(),
-            "conversation_id": "",
-            "source": "splunk",
-        }
+Your runbook **must have keywords that exist in the normalized haystack**.
 
-        summary_and_params_resp = llm_process_with_retry(
-            input_controller=input_controller,
-            payload=llm_payload,
-            format_type="json",
-            source="splunk",
-            max_attempts=3
-        )
+From your response, the haystack includes words like:
 
-        processed = summary_and_params_resp.get("processed_content", {})
-        content = processed.get("content", {})
-        content_dict = _force_json_dict(content)
+* `windows`
+* `appreadiness`
+* `restart`
+* `azure`
+* `vm`
+* `pih jboxqa grn`
 
-        alert_summary = content_dict.get("summary") or "No summary generated"
+So make sure your runbook file includes:
 
-        # 2) Build params (deterministic first; LLM params optional)
-        llm_params = content_dict.get("params") or {}
-        extracted_params = {
-            # Your old fields (keep them)
-            "cluster": llm_params.get("cluster"),
-            "namespace": llm_params.get("namespace"),
-            "service": llm_params.get("service") or dims.get("service.name") or dims.get("service"),
-            # New fields for Windows/Azure service restart
-            "os_type": dims.get("os.type"),
-            "service_name": dims.get("service.name") or llm_params.get("service"),
-            "azure_resource_id": dims.get("azure_resource_id"),
-            "azure_resource_group": dims.get("azure.resourcegroup.name"),
-            "azure_vm_name": dims.get("azure.vm.name"),
-            "host_name": dims.get("host.name"),
-            "cloud_region": dims.get("cloud.region"),
-        }
+```md
+Keywords: restart, windows, service, appreadiness, azure, vm
+```
 
-        # Clean up empty strings
-        for k in list(extracted_params.keys()):
-            if extracted_params[k] == "":
-                extracted_params[k] = None
+Even if your runbook id is `restart_windows_service`, adding `appreadiness` helps the score go > 0 immediately.
 
-        # 3) Load + match runbooks
-        runbooks = load_runbooks()
-        matched = match_runbooks(
-            alert_summary=alert_summary,
-            params=extracted_params,
-            runbooks=runbooks
-        )
+---
 
-        suggested_runbooks = [
-            {"id": rb["id"], "title": rb["title"], "content": rb["content"]}
-            for rb in matched
-        ] if matched else []
+## What to do now
 
-        selected_runbook = suggested_runbooks[0] if suggested_runbooks else None
-        action = selected_runbook["title"] if selected_runbook else None
+1. Deploy these method changes
+2. Trigger the same payload again
+3. Paste ONLY the log lines starting with `[RUNBOOK_DEBUG]`
 
-        proposal = {
-            "summary": alert_summary,
-            "params": extracted_params,
-            "suggested_runbooks": suggested_runbooks,
-            "selected_runbook": selected_runbook,
-            "action": action,
-            "execution_ready": bool(selected_runbook),
-        }
-
-        # 4) Execute now (no approval yet)
-        if selected_runbook:
-            event_type = selected_runbook["id"]  # stable mapping: runbook id = GitHub dispatch event_type
-            client_payload = {
-                "proposal": proposal,
-                "dimensions_raw": alert_raw,
-            }
-            status = github_repository_dispatch(event_type=event_type, client_payload=client_payload)
-            proposal["github_dispatch_status"] = status
-
-        return jsonify({
-            "success": True,
-            "data": {"proposal": proposal},
-            "timestamp": _now_iso_utc()
-        }), 200
-
-    except Exception as e:
-        logger.error(f"WorkFlow error: {e}")
-        return jsonify({"success": False, "error": "Internal server error"}), 500
-
-
+I’ll pinpoint the exact mismatch (it will usually be: keywords missing OR runbooks directory path is wrong OR keywords line not being parsed).
