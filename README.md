@@ -1,40 +1,35 @@
-Below is simple slide-ready content (kid-friendly wording) based only on the Atlassian risk matrix page.  ￼
+Here’s simple slide content for Risk-Based Prioritization as a continuation of your risk matrix slide (pulled from the same Atlassian risk matrix guidance).  ￼
 
 ⸻
 
-Slide Title: Risk Matrix (Super Simple)
+Slide Title: Risk-Based Prioritization (Picking What to Fix First)
 
-What is a Risk Matrix?
-	•	A risk matrix is a picture chart that helps us see which problems could happen and how serious they could be.  ￼
-	•	It helps teams spot, compare, and pick which risks to handle first.  ￼
+What it means
+	•	Risk-based prioritization means: we don’t treat all problems the same.
+	•	We use the risk matrix to decide what needs attention first, based on:
+	•	Likelihood (chance it happens)
+	•	Impact (how bad it would be)  ￼
 
-How it works (2 lines)
-	•	It’s a grid with two sides:
-	•	Likelihood = How likely it is to happen
-	•	Impact = How big the trouble is if it happens  ￼
-	•	Risks in the top-right corner (high likelihood + high impact) need fast action.  ￼
+How we prioritize (easy rules)
+	•	High Likelihood + High Impact = Top priority (do it now)
+	•	Needs quick action and resources.  ￼
+	•	High Impact but Lower Likelihood = Plan and prepare
+	•	Keep it visible and have a backup plan.  ￼
+	•	High Likelihood but Lower Impact = Fix when possible
+	•	Small problems that happen often.  ￼
+	•	Low Likelihood + Low Impact = Monitor or accept
+	•	Just keep an eye on it.  ￼
 
-Steps to make one
-	1.	List risks (all possible problems).  ￼
-	2.	Give each risk a score for Likelihood and Impact (like Low/Medium/High).  ￼
-	3.	Plot each risk on the grid (Likelihood vs. Impact).  ￼
-	4.	Decide what to do:
-	•	Mitigate (reduce it)
-	•	Transfer (give/share it with someone else, like insurance)
-	•	Accept (watch it, do nothing for now)
-	•	Avoid (change plan so it can’t happen)  ￼
+What we do after prioritizing (action choices)
+	•	Mitigate: reduce chance or damage
+	•	Transfer: shift responsibility (example: insurance/vendor)
+	•	Accept: acknowledge and monitor
+	•	Avoid: change plan so risk doesn’t exist  ￼
 
-Tiny example (easy)
-	•	Risk: Server downtime
-	•	Likelihood: Medium
-	•	Impact: High
-	•	Put it on the grid → treat it as important.  ￼
-
-Why we use it
-	•	Makes it easier to decide what to fix first.  ￼
-	•	Helps everyone talk about risks using the same picture.  ￼
-	•	Supports planning actions so problems don’t surprise us.  ￼
+Why this helps
+	•	We focus time and budget on the most serious risks first.
+	•	Everyone aligns because the matrix makes priority visible and easy to agree on.  ￼
 
 ⸻
 
-If you want, I can also give you a one-slide speaker script (30 seconds) that matches this slide.
+If you want, I can also write a 2-minute talk track for this slide that flows naturally from your previous script.
