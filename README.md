@@ -505,4 +505,429 @@ def request_step_approval(
         "User-Agent": "runbook-orchestrator/power-automate-approval"
     }
 
-    att
+    attempt = 0
+    last_err: Optional[RuntimeError] = None
+
+    while attempt < max_attempts:
+        attempt += 1
+        req = urllib.request.Request(approval_url, data=body_bytes, headers=headers, method="POST")
+        try:
+            logger.info(f"[APPROVAL] Requesting approval | run_id={run_id} | step_index={step_index} | attempt={attempt}")
+            with urllib.request.urlopen(req, timeout=timeout_secs) as resp:
+                status = resp.status
+                resp_text = resp.read().decode("utf-8", errors="replace")
+                parsed = _parse_approval_response(resp_text)
+
+                logger.info(f"[APPROVAL] Response received | http={status} | approved={parsed.get('approved')} | outcome={parsed.get('outcome')}")
+                parsed["_http_status"] = status
+                parsed["_raw"] = resp_text
+                return parsed
+
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else str(e)
+            logger.error(f"[APPROVAL] HTTPError (attempt {attempt}/{max_attempts}): {e.code} {body}")
+            last_err = RuntimeError(f"Approval endpoint HTTP error: {e.code} {body}")
+
+            # Retry transient
+            if e.code in (429, 500, 502, 503, 504) and attempt < max_attempts:
+                time.sleep(0.5 * attempt)
+                continue
+            raise last_err
+
+        except urllib.error.URLError as e:
+            logger.error(f"[APPROVAL] URLError (attempt {attempt}/{max_attempts}): {e}")
+            last_err = RuntimeError(f"Approval endpoint connectivity error: {e}")
+            if attempt < max_attempts:
+                time.sleep(0.5 * attempt)
+                continue
+            raise last_err
+
+        except Exception as e:
+            logger.error(f"[APPROVAL] Unexpected error (attempt {attempt}/{max_attempts}): {e}")
+            last_err = RuntimeError(f"Approval endpoint unexpected error: {e}")
+            if attempt < max_attempts:
+                time.sleep(0.5 * attempt)
+                continue
+            raise last_err
+
+    if last_err:
+        raise last_err
+    raise RuntimeError("Approval request failed: unknown error")
+
+
+# -------------------------------------------------------------------------------------------------
+# Azure Function App trigger (accepts str or dict)
+# -------------------------------------------------------------------------------------------------
+
+def trigger_function_app(
+    function_url: str,
+    payload: Union[str, Dict[str, Any]],
+    function_key: Optional[str] = None,
+    max_attempts: int = FUNCTION_APP_MAX_ATTEMPTS,
+    timeout_secs: int = FUNCTION_APP_TIMEOUT_SECS
+) -> Tuple[int, str]:
+    """
+    POST payload to Azure Function App.
+    - If payload is dict -> Content-Type: application/json
+    - If payload is str  -> Content-Type: text/plain
+    - Optionally uses x-functions-key header when URL doesn't include ?code=
+    """
+    if not function_url:
+        raise RuntimeError("Function App URL is missing (set FUNCTION_APP_URL env var).")
+
+    headers = {"User-Agent": "runbook-orchestrator/azure-function"}
+    if isinstance(payload, dict):
+        headers["Content-Type"] = "application/json"
+        body_bytes = json.dumps(payload).encode("utf-8")
+    elif isinstance(payload, str):
+        headers["Content-Type"] = "text/plain"
+        body_bytes = payload.encode("utf-8")
+    else:
+        raise TypeError(f"Unsupported payload type: {type(payload)}. Use str or dict.")
+
+    # If caller passed function_key and URL doesn't already contain code=
+    if function_key and ("code=" not in function_url):
+        headers["x-functions-key"] = function_key
+
+    attempt = 0
+    last_err: Optional[RuntimeError] = None
+
+    while attempt < max_attempts:
+        attempt += 1
+        req = urllib.request.Request(function_url, data=body_bytes, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_secs) as resp:
+                status = resp.status
+                resp_text = resp.read().decode("utf-8", errors="replace")
+                logger.info(f"[FUNCTION_APP] Triggered successfully | status={status}")
+                return status, resp_text
+
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="ignore") if hasattr(e, "read") else str(e)
+            logger.error(f"[FUNCTION_APP] Trigger failed (attempt {attempt}/{max_attempts}): {e.code} {body}")
+            last_err = RuntimeError(f"Function app trigger failed: {e.code} {body}")
+
+            # Retry only on transient status codes
+            if e.code in (429, 500, 502, 503, 504) and attempt < max_attempts:
+                time.sleep(0.5 * attempt)
+                continue
+            raise last_err
+
+        except urllib.error.URLError as e:
+            logger.error(f"[FUNCTION_APP] URL error (attempt {attempt}/{max_attempts}): {e}")
+            last_err = RuntimeError(f"Function app trigger connectivity error: {e}")
+            if attempt < max_attempts:
+                time.sleep(0.5 * attempt)
+                continue
+            raise last_err
+
+        except Exception as e:
+            logger.error(f"[FUNCTION_APP] Unexpected error (attempt {attempt}/{max_attempts}): {e}")
+            last_err = RuntimeError(f"Function app trigger unexpected error: {e}")
+            if attempt < max_attempts:
+                time.sleep(0.5 * attempt)
+                continue
+            raise last_err
+
+    if last_err:
+        raise last_err
+    raise RuntimeError("Function app trigger failed: unknown error")
+
+
+# -------------------------------------------------------------------------------------------------
+# Step-by-step execution helpers (stateful across calls via request payload)
+# -------------------------------------------------------------------------------------------------
+
+def _new_run_id() -> str:
+    return f"run_{uuid.uuid4().hex}"
+
+
+def _get_execution_state(request_json: Dict[str, Any]) -> Dict[str, Any]:
+    state = request_json.get("execution_state")
+    if isinstance(state, dict):
+        return state
+    return {}
+
+
+def _is_continuation_call(state: Dict[str, Any]) -> bool:
+    return bool(state.get("run_id")) and isinstance(state.get("plan"), dict)
+
+
+def _plan_has_more_steps(plan: Dict[str, Any], step_index: int) -> bool:
+    steps = plan.get("steps") or []
+    return step_index < len(steps)
+
+
+def _execute_single_step_via_function_app(
+    function_url: str,
+    function_key: Optional[str],
+    run_id: str,
+    step_index: int,
+    plan: Dict[str, Any],
+    request_json: Dict[str, Any],
+) -> Tuple[int, str]:
+    """
+    Executes exactly one step by calling the Azure Function App.
+    PER REQUIREMENT: Always send ONLY the RAW alert JSON (request_json) to the Function App.
+    """
+    steps = plan.get("steps") or []
+    if step_index >= len(steps):
+        raise RuntimeError(f"Invalid step_index={step_index}, no step found")
+
+    logger.info(
+        f"[WORKFLOW] Executing step {step_index} using RAW payload only | "
+        f"run_id={run_id} | selected_runbook_id={plan.get('selected_runbook_id')}"
+    )
+
+    # RAW payload path only (no runbook_step envelope)
+    return trigger_function_app(
+        function_url=function_url,
+        payload=request_json,  # raw JSON without runbook_step envelope
+        function_key=function_key,
+        max_attempts=FUNCTION_APP_MAX_ATTEMPTS,
+        timeout_secs=FUNCTION_APP_TIMEOUT_SECS,
+    )
+
+
+# -------------------------------------------------------------------------------------------------
+# Main orchestrator
+# -------------------------------------------------------------------------------------------------
+
+def run_github_workflow(
+    input_controller,
+    request_json: Dict[str, Any],
+    embeddings_client: Optional[EmbeddingsClient] = None,
+) -> Dict[str, Any]:
+    """
+    Orchestrates:
+      - If continuation call: approve + execute next step
+      - Else: load runbooks, build plan via LLM, then approve + execute step 0
+
+    Returns a response dict that includes updated execution_state.
+    """
+
+    # ---------------------------------------------------------------------------------------------
+    # 1) Determine if this is a continuation call
+    # ---------------------------------------------------------------------------------------------
+    state = _get_execution_state(request_json)
+    if _is_continuation_call(state):
+        run_id = state["run_id"]
+        plan = state["plan"]
+        step_index = int(state.get("step_index", 0))
+
+        logger.info(f"[WORKFLOW] Continuation call | run_id={run_id} | step_index={step_index}")
+
+        if not _plan_has_more_steps(plan, step_index):
+            logger.info(f"[WORKFLOW] No more steps | run_id={run_id}")
+            return {
+                "status": "completed",
+                "message": "All steps completed.",
+                "run_id": run_id,
+                "plan": plan,
+                "execution_state": {
+                    "run_id": run_id,
+                    "plan": plan,
+                    "step_index": step_index,
+                    "completed": True,
+                    "timestamp_utc": _now_iso_utc()
+                }
+            }
+
+        # Approval gate BEFORE executing this step
+        approval = request_step_approval(
+            approval_url=POWER_AUTOMATE_APPROVAL_URL,
+            run_id=run_id,
+            step_index=step_index,
+            plan=plan,
+            request_json=request_json,
+        )
+
+        if not approval.get("approved", False):
+            logger.info(f"[WORKFLOW] Step blocked by approval | run_id={run_id} | step_index={step_index}")
+            return {
+                "status": "blocked",
+                "message": "Step execution blocked by approval response.",
+                "run_id": run_id,
+                "plan": plan,
+                "approval": approval,
+                "execution_state": {
+                    "run_id": run_id,
+                    "plan": plan,
+                    "step_index": step_index,
+                    "blocked": True,
+                    "timestamp_utc": _now_iso_utc()
+                }
+            }
+
+        # Execute step
+        http_status, resp_text = _execute_single_step_via_function_app(
+            function_url=FUNCTION_APP_URL,
+            function_key=FUNCTION_APP_KEY or None,
+            run_id=run_id,
+            step_index=step_index,
+            plan=plan,
+            request_json=request_json,
+        )
+
+        next_step_index = step_index + 1
+        done = not _plan_has_more_steps(plan, next_step_index)
+
+        return {
+            "status": "completed" if done else "in_progress",
+            "message": "Step executed." if not done else "Final step executed.",
+            "run_id": run_id,
+            "approval": approval,
+            "function_app": {"http_status": http_status, "response": resp_text},
+            "plan": plan,
+            "execution_state": {
+                "run_id": run_id,
+                "plan": plan,
+                "step_index": next_step_index,
+                "completed": done,
+                "timestamp_utc": _now_iso_utc()
+            }
+        }
+
+    # ---------------------------------------------------------------------------------------------
+    # 2) New run: build plan via LLM
+    # ---------------------------------------------------------------------------------------------
+    run_id = _new_run_id()
+    logger.info(f"[WORKFLOW] New run | run_id={run_id}")
+
+    runbooks = load_runbooks()
+
+    # Pre-rank runbooks semantically (optional)
+    runbooks = rank_runbooks_semantically(
+        alert_json=request_json,
+        runbooks=runbooks,
+        embeddings_client=embeddings_client,
+        k=TOP_K_RUNBOOKS
+    )
+
+    # Chunk runbooks
+    rb_id_to_chunks: Dict[str, List[str]] = {}
+    for rb in runbooks:
+        rb_id_to_chunks[rb["id"]] = chunk_runbook_content(rb.get("content") or "")
+
+    # Pre-rank chunks semantically (optional)
+    rb_id_to_chunks = rank_chunks_semantically(
+        alert_json=request_json,
+        rb_id_to_chunks=rb_id_to_chunks,
+        embeddings_client=embeddings_client,
+        top_m_per_runbook=TOP_M_CHUNKS_PER_RUNBOOK
+    )
+
+    # Build runbook payload for LLM
+    runbook_payload: List[Dict[str, Any]] = []
+    for rb in runbooks:
+        rb_id = rb["id"]
+        runbook_payload.append({
+            "id": rb_id,
+            "title": rb.get("title"),
+            "chunks": rb_id_to_chunks.get(rb_id, [])
+        })
+
+    raw_message_str = json.dumps(request_json, ensure_ascii=False, indent=2)
+    instruction = build_instruction_for_structured_output(raw_message_str, runbook_payload)
+
+    # Call LLM
+    llm_payload = {
+        "type": "user_message",
+        "content": instruction,
+        "conversation_id": "",
+        "timestamp": _now_iso_utc(),
+        "source": "web_ui"
+    }
+
+    llm_resp = llm_process_with_retry(
+        input_controller=input_controller,
+        payload=llm_payload,
+        format_type="json",
+        source="web_ui",
+        max_attempts=3
+    )
+
+    # Extract plan dict from response
+    # Many controllers return {"content": "..."}; some return already parsed dict.
+    plan = force_json_dict(llm_resp.get("content") if isinstance(llm_resp, dict) else llm_resp)
+
+    # Validate plan shape
+    selected_runbook_id = plan.get("selected_runbook_id")
+    steps = plan.get("steps") or []
+    if selected_runbook_id and not steps:
+        logger.warning("[WORKFLOW] LLM selected a runbook but produced no steps. Marking as no_match.")
+        plan["selected_runbook_id"] = None
+        plan["selected_runbook_title"] = None
+
+    if not plan.get("selected_runbook_id"):
+        logger.info("[WORKFLOW] No matching runbook selected.")
+        return {
+            "status": "no_match",
+            "message": "No matching runbook selected by the model.",
+            "run_id": run_id,
+            "plan": plan,
+            "execution_state": {
+                "run_id": run_id,
+                "plan": plan,
+                "step_index": 0,
+                "completed": True,
+                "timestamp_utc": _now_iso_utc()
+            }
+        }
+
+    # ---------------------------------------------------------------------------------------------
+    # 3) Execute step 0 (approval-gated)
+    # ---------------------------------------------------------------------------------------------
+    step_index = 0
+    approval = request_step_approval(
+        approval_url=POWER_AUTOMATE_APPROVAL_URL,
+        run_id=run_id,
+        step_index=step_index,
+        plan=plan,
+        request_json=request_json,
+    )
+
+    if not approval.get("approved", False):
+        logger.info(f"[WORKFLOW] Step blocked by approval | run_id={run_id} | step_index={step_index}")
+        return {
+            "status": "blocked",
+            "message": "Step execution blocked by approval response.",
+            "run_id": run_id,
+            "plan": plan,
+            "approval": approval,
+            "execution_state": {
+                "run_id": run_id,
+                "plan": plan,
+                "step_index": step_index,
+                "blocked": True,
+                "timestamp_utc": _now_iso_utc()
+            }
+        }
+
+    http_status, resp_text = _execute_single_step_via_function_app(
+        function_url=FUNCTION_APP_URL,
+        function_key=FUNCTION_APP_KEY or None,
+        run_id=run_id,
+        step_index=step_index,
+        plan=plan,
+        request_json=request_json,
+    )
+
+    next_step_index = step_index + 1
+    done = not _plan_has_more_steps(plan, next_step_index)
+
+    return {
+        "status": "completed" if done else "in_progress",
+        "message": "Step executed." if not done else "Final step executed.",
+        "run_id": run_id,
+        "approval": approval,
+        "function_app": {"http_status": http_status, "response": resp_text},
+        "plan": plan,
+        "execution_state": {
+            "run_id": run_id,
+            "plan": plan,
+            "step_index": next_step_index,
+            "completed": done,
+            "timestamp_utc": _now_iso_utc()
+        }
+    }
