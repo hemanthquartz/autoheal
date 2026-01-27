@@ -1,56 +1,60 @@
-import os
-          import json
-          import boto3
+import os, json, time
+import boto3
 
-          ssm = boto3.client("ssm")
+ssm = boto3.client("ssm")
 
-          def _get(d, path, default=None):
-              cur = d
-              for p in path.split("."):
-                  if not isinstance(cur, dict) or p not in cur:
-                      return default
-                  cur = cur[p]
-              return cur
+TERMINAL = {"Success", "Failed", "TimedOut", "Cancelled", "Cancelling"}
 
-          def handler(event, context):
-              # Expected event shape (from EventBridge):
-              # event["detail"] = {"instanceId": "...", "runAsUser": "...", "command": "..."}
-              print("EVENT:", json.dumps(event))
+def lambda_handler(event, context):
+    print("EVENT:", json.dumps(event))
 
-              detail = event.get("detail") or {}
+    detail = event.get("detail") or {}
+    instance_id = detail["instanceId"]
+    run_as_user = detail.get("runAsUser", os.environ.get("DEFAULT_RUN_AS_USER", "ec2-user"))
+    document_name = os.environ.get("DOCUMENT_NAME", "fundactng-shellssmdoc-stepfunc")
 
-              instance_id = detail.get("instanceId") or os.environ.get("DEFAULT_INSTANCE_ID")
-              run_as_user = detail.get("runAsUser") or os.environ.get("DEFAULT_RUN_AS_USER")
-              command = detail.get("command")
+    # IMPORTANT: send a command that includes verification output
+    command = detail["command"]  # send the wrapped command shown above
 
-              if not instance_id:
-                  raise ValueError("Missing instanceId. Provide detail.instanceId or set DefaultInstanceId in the stack.")
-              if not command:
-                  raise ValueError("Missing command. Provide detail.command (example: sendevent -E STARTJOB -J <JOB_NAME>).")
+    resp = ssm.send_command(
+        DocumentName=document_name,
+        InstanceIds=[instance_id],
+        Parameters={
+            "command": [command],
+            "runAsUser": [run_as_user],
+        },
+        Comment=f"Autosys trigger via {document_name}",
+        CloudWatchOutputConfig={
+            "CloudWatchOutputEnabled": True,
+            "CloudWatchLogGroupName": "/ssm/autosys-trigger"
+        }
+    )
 
-              document_name = os.environ.get("DOCUMENT_NAME")
+    command_id = resp["Command"]["CommandId"]
+    print("SSM CommandId:", command_id)
 
-              # Your SSM document expects these parameter names:
-              # - command
-              # - runAsUser
-              resp = ssm.send_command(
-                  DocumentName=document_name,
-                  InstanceIds=[instance_id],
-                  Parameters={
-                      "command": [command],
-                      "runAsUser": [run_as_user]
-                  },
-                  Comment=f"Autosys trigger via {document_name}"
-              )
+    # wait for completion
+    deadline = time.time() + 300  # 5 minutes
+    while time.time() < deadline:
+        inv = ssm.get_command_invocation(CommandId=command_id, InstanceId=instance_id)
+        status = inv.get("Status")
+        if status in TERMINAL:
+            return {
+                "ok": status == "Success",
+                "status": status,
+                "instanceId": instance_id,
+                "documentName": document_name,
+                "runAsUser": run_as_user,
+                "commandId": command_id,
+                "stdout": inv.get("StandardOutputContent", ""),
+                "stderr": inv.get("StandardErrorContent", ""),
+                "cloudwatchLogGroup": "/ssm/autosys-trigger"
+            }
+        time.sleep(3)
 
-              command_id = resp["Command"]["CommandId"]
-              print("SSM CommandId:", command_id)
-
-              return {
-                  "ok": True,
-                  "instanceId": instance_id,
-                  "documentName": document_name,
-                  "runAsUser": run_as_user,
-                  "command": command,
-                  "commandId": command_id
-              }
+    return {
+        "ok": False,
+        "status": "TimeoutWaitingForSSM",
+        "instanceId": instance_id,
+        "commandId": command_id
+    }
