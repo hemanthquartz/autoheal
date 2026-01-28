@@ -1,120 +1,75 @@
-import os
-import json
-import time
-import boto3
-import botocore
+- Meeting title: Verimo Setup Options Review
+- Participants (as inferred): Speaker 1 (primary presenter), others (questions/comments from Crystal and unnamed speakers); meeting focused on deployment/setup decisions and access controls.
 
-ssm = boto3.client("ssm")
+Context and purpose
+- Purpose: Decide how to set up Verimo in production and confirm access/roles for emergency troubleshooting.
+- Two high-level setup approaches were proposed and compared: manual in-prod setup vs. creating and using an AMI image.
 
-TERMINAL = {"Success", "Failed", "TimedOut", "Cancelled", "Cancelling"}
+Option A — Manual production setup (described as “prod one” / first option)
+- Process:
+  - Install Verimo manually on a production Windows box.
+  - Run required manual steps to configure and confirm the environment.
+  - Execute/verify automation scripts run as expected after manual install.
+  - Once fully configured and validated, create an AMI from that manually configured prod instance for future reuse.
+- Pros implied:
+  - Ensures initial setup is done in prod environment directly.
+  - The AMI will reflect an already validated prod configuration.
+- Considerations:
+  - Manual work upfront each time for initial installs.
+  - Need to ensure nothing sensitive or non-prod artifacts are introduced when creating AMI (although this is more explicitly discussed for Option B).
 
-def wait_for_invocation(command_id: str, instance_id: str, timeout_seconds: int = 300, poll_seconds: int = 2):
-    """Wait until GetCommandInvocation exists (handles InvocationDoesNotExist eventual consistency)."""
-    deadline = time.time() + timeout_seconds
-    last_err = None
+Option B — Create sanitized AMI from pre-prod (image-first approach)
+- Process:
+  - Use existing non-prod / pre-prod instance which already has Verimo installed and setup steps applied.
+  - Remove all data-related artifacts and pre-prod-specific data from that instance (sanitize it).
+  - Create an AMI of the sanitized pre-prod instance.
+  - Use that AMI to launch prod instances in future.
+- Alternative within Option B:
+  - Instead of sanitizing pre-prod, first perform a one-time manual prod setup and then create an AMI from that prod instance (this overlaps with Option A’s end state).
+- Pros implied:
+  - Faster spin-up for future instances using a prepared image.
+  - Can standardize and automate builds once AMI is available.
+- Risks & controls:
+  - Risk of accidentally pushing pre-prod data to production if the pre-prod instance is not fully sanitized.
+  - Need to run the AMI creation and transfer through appropriate guardrails/review to ensure no data leakage to prod.
+  - Crystal raised questions about feasibility and guardrail checks.
 
-    while time.time() < deadline:
-        try:
-            return ssm.get_command_invocation(CommandId=command_id, InstanceId=instance_id)
-        except botocore.exceptions.ClientError as e:
-            code = e.response.get("Error", {}).get("Code", "")
-            # This is the key fix for your screenshot error
-            if code == "InvocationDoesNotExist":
-                last_err = e
-                time.sleep(poll_seconds)
-                continue
-            raise
+Access, roles, and emergency troubleshooting
+- Topic: Confirming a role that grants Don and Kevin permission to log into the Windows box.
+- Purpose of role:
+  - Not for routine manual steps; intended for worst-case scenarios or emergency troubleshooting (e.g., to check what went wrong, view events).
+  - Allows login and monitoring of Verimo process events and relevant system events.
+- Current state discussed:
+  - A role request has been made (or is planned) to give Don and Kevin access; need confirmation that it exists and is properly configured.
+  - The role in pre-prod exists and is being referenced as the model for prod access.
 
-    raise TimeoutError(f"Timed out waiting for invocation to exist. command_id={command_id} instance_id={instance_id} last_err={last_err}")
+Action items (as recorded in meeting summary, assignee listed as Speaker 0 in transcript summary)
+- Decide on the Verimo setup approach and document the chosen approach so the team can proceed (manual prod setup vs. AMI-based approach).
+- If choosing AMI from pre-prod:
+  - Create an AMI from pre-prod after removing all data artifacts.
+  - Perform guardrail/review to ensure no pre-prod data is pushed to prod.
+  - Deliver sanitized AMI to production.
+- If choosing manual-first:
+  - Manually configure the Windows box in production.
+  - Create an AMI from that manually configured instance and use it for future launches.
+- Confirm that the requested role granting Don and Kevin permission to log into the Windows box exists and that access is configured strictly for emergency troubleshooting and monitoring.
 
-def wait_until_done(command_id: str, instance_id: str, timeout_seconds: int = 600, poll_seconds: int = 3):
-    """Poll until command reaches a terminal state and return the final invocation."""
-    deadline = time.time() + timeout_seconds
+Clarifications and decisions needed (next steps for the team)
+- Team must choose between:
+  - Manual initial prod setup then AMI creation (Option A), or
+  - Sanitize pre-prod and create AMI for prod (Option B).
+- Define and document guardrail/review process and responsible party to prevent data leakage from pre-prod to prod.
+- Confirm the role creation and specific permissions for Don and Kevin; decide whether role mirrors pre-prod role exactly or needs adjustments for prod.
+- Assign owners and deadlines for:
+  - AMI creation and sanitization,
+  - Guardrail compliance review,
+  - Manual prod setup (if chosen),
+  - Role configuration and verification for Don and Kevin.
 
-    inv = wait_for_invocation(command_id, instance_id, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds)
+Precise points mentioned in transcript worth noting
+- Two options repeated multiple times: manual prod install vs. create AMI.
+- Concern about pushing pre-prod data to prod — guardrails/review emphasized.
+- The role is explicitly for troubleshooting/worst-case scenarios, not regular manual work.
+- Speaker 1 repeatedly asked for confirmation to move forward after addressing these two points.
 
-    while time.time() < deadline:
-        status = inv.get("Status")
-        if status in TERMINAL:
-            return inv
-        time.sleep(poll_seconds)
-        inv = ssm.get_command_invocation(CommandId=command_id, InstanceId=instance_id)
-
-    raise TimeoutError(f"Timed out waiting for command completion. command_id={command_id} instance_id={instance_id}")
-
-def lambda_handler(event, context):
-    """
-    Expected EventBridge event:
-      event.detail.instanceId  (required unless DEFAULT_INSTANCE_ID set)
-      event.detail.runAsUser   (optional; fallback DEFAULT_RUN_AS_USER)
-      event.detail.command     (required)
-
-    Recommended command (trigger + proof):
-      bash -lc 'JOB="..."; sendevent -E FORCE_STARTJOB -J "$JOB"; sleep 5; autostatus -J "$JOB" || true; autorep -J "$JOB" -q || true'
-    """
-    print("EVENT:", json.dumps(event))
-
-    detail = event.get("detail") or {}
-
-    instance_id = detail.get("instanceId") or os.environ.get("DEFAULT_INSTANCE_ID")
-    run_as_user = detail.get("runAsUser") or os.environ.get("DEFAULT_RUN_AS_USER", "ec2-user")
-    command = detail.get("command")
-
-    if not instance_id:
-        return {"ok": False, "error": "Missing instanceId (set detail.instanceId or DEFAULT_INSTANCE_ID env var)."}
-    if not command:
-        return {"ok": False, "error": "Missing command (set detail.command)."}
-
-    document_name = os.environ.get("DOCUMENT_NAME", "fundactng-shellssmdoc-stepfunc")
-
-    # Send the SSM command
-    try:
-        resp = ssm.send_command(
-            DocumentName=document_name,
-            InstanceIds=[instance_id],
-            Parameters={
-                "command": [command],
-                "runAsUser": [run_as_user],
-            },
-            Comment=f"Autosys trigger via {document_name}",
-            # Optional but useful: SSM output to CloudWatch Logs
-            CloudWatchOutputConfig={
-                "CloudWatchOutputEnabled": True,
-                "CloudWatchLogGroupName": "/ssm/autosys-trigger"
-            }
-        )
-    except botocore.exceptions.ClientError as e:
-        print("send_command ERROR:", str(e))
-        return {"ok": False, "error": "send_command failed", "details": str(e)}
-
-    command_id = resp["Command"]["CommandId"]
-    print("SSM CommandId:", command_id)
-
-    # Wait for completion and return logs
-    try:
-        inv = wait_until_done(command_id, instance_id, timeout_seconds=600, poll_seconds=3)
-    except Exception as e:
-        print("wait_until_done ERROR:", str(e))
-        return {
-            "ok": False,
-            "error": "Failed waiting for SSM completion",
-            "commandId": command_id,
-            "instanceId": instance_id,
-            "details": str(e)
-        }
-
-    status = inv.get("Status")
-    stdout = inv.get("StandardOutputContent", "")
-    stderr = inv.get("StandardErrorContent", "")
-
-    return {
-        "ok": status == "Success",
-        "status": status,
-        "instanceId": instance_id,
-        "documentName": document_name,
-        "runAsUser": run_as_user,
-        "commandId": command_id,
-        "stdout": stdout,
-        "stderr": stderr,
-        "cloudwatchLogGroup": "/ssm/autosys-trigger"
-    }
+No verbatim quotes extracted beyond paraphrase (transcript available in meeting context).
