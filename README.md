@@ -1,12 +1,20 @@
 import os
 import json
 import time
+import re
 import boto3
 import botocore
 
 ssm = boto3.client("ssm")
 
-TERMINAL = {"Success", "Failed", "TimedOut", "Cancelled", "Cancelling"}
+SSM_TERMINAL = {"Success", "Failed", "TimedOut", "Cancelled", "Cancelling"}
+
+# Tune these keywords to match your Autosys output in your environment.
+# The goal is NOT to prove "success", only to prove "start accepted / started running".
+AUTOSYS_START_KEYWORDS = [
+    r"\bRUN\b", r"\bRUNNING\b", r"\bSTART\b", r"\bSTARTING\b", r"\bACTIVE\b",
+    r"\bEXEC\b", r"\bEXECUTING\b", r"\bIN[_ ]PROGRESS\b", r"\bACTIVATED\b"
+]
 
 def _client_error_code(e: Exception) -> str:
     if isinstance(e, botocore.exceptions.ClientError):
@@ -35,55 +43,109 @@ def wait_until_done(command_id: str, instance_id: str, timeout_seconds: int = 90
 
     while time.time() < deadline:
         status = inv.get("Status")
-        if status in TERMINAL:
+        if status in SSM_TERMINAL:
             return inv
         time.sleep(poll_seconds)
         inv = ssm.get_command_invocation(CommandId=command_id, InstanceId=instance_id)
 
     raise TimeoutError(f"Timed out waiting for command completion. {command_id=} {instance_id=}")
 
-def build_autosys_proof_command(job_name: str) -> str:
+def _safe_single_quote(s: str) -> str:
+    """Safely embed arbitrary text inside a single-quoted shell string."""
+    return s.replace("'", "'\"'\"'")
+
+def build_autosys_start_confirmation_command(job_name: str) -> str:
     """
-    Build a command that:
-      - prints PATH checks (so we see if autosys commands exist)
-      - triggers the job
-      - prints autostatus + autorep output (proof)
-    Output is forced into stdout via 2>&1 so Lambda can return it.
+    This command prints explicit proof tokens into stdout:
+      - SENDEVENT_OUTPUT=...
+      - AUTOSTATUS_OUTPUT=...
+      - AUTOREP_OUTPUT=...
+      - START_CONFIRMED=YES/NO
     """
-    # Use single quotes around the job name to avoid breaking the SSM doc's bash -c quoting.
-    j = job_name.replace("'", "'\"'\"'")  # safe quote for single-quote context
+    j = _safe_single_quote(job_name)
+
+    # IMPORTANT: 2>&1 forces output into stdout so Lambda can return it.
+    # We capture outputs into variables then echo them with prefixes (easy to parse).
     return (
-        "echo '=== CONTEXT ===' ; "
-        "date -Is 2>&1 ; whoami 2>&1 ; hostname 2>&1 ; "
-        "echo \"PWD=$(pwd)\" 2>&1 ; "
-        "echo '=== CHECK AUTOSYS BINARIES ===' ; "
-        "command -v sendevent 2>&1 || echo 'MISSING: sendevent' ; "
-        "command -v autostatus 2>&1 || echo 'MISSING: autostatus' ; "
-        "command -v autorep 2>&1 || echo 'MISSING: autorep' ; "
-        "echo '=== TRIGGER ===' ; "
-        f"sendevent -E FORCE_STARTJOB -J '{j}' 2>&1 ; "
-        "echo 'Sleeping 10s...' 2>&1 ; "
-        "sleep 10 ; "
-        "echo '=== AUTOSTATUS ===' ; "
-        f"autostatus -J '{j}' 2>&1 ; "
-        "echo '=== AUTOREP (summary) ===' ; "
-        f"autorep -J '{j}' -q 2>&1 ; "
-        "echo '=== DONE ===' ; date -Is 2>&1"
+        "bash -lc '"
+        "set +e; "  # do not fail the whole script if autostatus/autorep returns non-zero
+        "JOB='" + j + "'; "
+        "echo \"JOB=$JOB\"; "
+        "echo \"TS_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)\"; "
+        "echo \"WHOAMI=$(whoami)\"; "
+        "echo \"HOST=$(hostname)\"; "
+
+        "echo \"STEP=CHECK_BINARIES\"; "
+        "command -v sendevent >/dev/null 2>&1 && echo \"BIN_SENDEVENT=FOUND\" || echo \"BIN_SENDEVENT=MISSING\"; "
+        "command -v autostatus >/dev/null 2>&1 && echo \"BIN_AUTOSTATUS=FOUND\" || echo \"BIN_AUTOSTATUS=MISSING\"; "
+        "command -v autorep >/dev/null 2>&1 && echo \"BIN_AUTOREP=FOUND\" || echo \"BIN_AUTOREP=MISSING\"; "
+
+        "echo \"STEP=SENDEVENT\"; "
+        "SE_OUT=$(sendevent -E FORCE_STARTJOB -J \"$JOB\" 2>&1); "
+        "SE_RC=$?; "
+        "echo \"SENDEVENT_RC=$SE_RC\"; "
+        "echo \"SENDEVENT_OUTPUT=$SE_OUT\"; "
+
+        "echo \"STEP=WAIT\"; "
+        "sleep 5; "
+
+        "echo \"STEP=AUTOSTATUS\"; "
+        "AS_OUT=$(autostatus -J \"$JOB\" 2>&1); "
+        "AS_RC=$?; "
+        "echo \"AUTOSTATUS_RC=$AS_RC\"; "
+        "echo \"AUTOSTATUS_OUTPUT=$AS_OUT\"; "
+
+        "echo \"STEP=AUTOREP\"; "
+        "AR_OUT=$(autorep -J \"$JOB\" -q 2>&1); "
+        "AR_RC=$?; "
+        "echo \"AUTOREP_RC=$AR_RC\"; "
+        "echo \"AUTOREP_OUTPUT=$AR_OUT\"; "
+
+        # Start confirmation logic: if sendevent succeeded OR autostatus shows start/running indicators
+        "START=NO; "
+        "if [ \"$SE_RC\" -eq 0 ]; then START=YES; fi; "
+        # Optional extra confidence: autostatus contains any running/start keyword
+        "echo \"$AS_OUT\" | egrep -qi \"(RUN|RUNNING|START|STARTING|ACTIVE|EXEC|EXECUTING|IN[_ ]PROGRESS|ACTIVATED)\" && START=YES; "
+        "echo \"START_CONFIRMED=$START\"; "
+
+        "echo \"TS_DONE_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)\"; "
+        "'"
     )
+
+def parse_start_evidence(stdout: str):
+    """
+    Extract small, high-signal lines so your Lambda response clearly shows start proof.
+    """
+    lines = stdout.splitlines() if stdout else []
+    evidence = []
+    want_prefixes = (
+        "JOB=", "TS_UTC=", "WHOAMI=", "HOST=",
+        "BIN_", "STEP=",
+        "SENDEVENT_RC=", "SENDEVENT_OUTPUT=",
+        "AUTOSTATUS_RC=", "AUTOSTATUS_OUTPUT=",
+        "AUTOREP_RC=", "AUTOREP_OUTPUT=",
+        "START_CONFIRMED=",
+        "TS_DONE_UTC="
+    )
+    for ln in lines:
+        if ln.startswith(want_prefixes):
+            evidence.append(ln)
+    # keep response small but useful
+    return evidence[:200]
 
 def lambda_handler(event, context):
     """
-    Event expected (EventBridge or direct test):
+    Input event (EventBridge or test):
       {
         "detail": {
-          "instanceId": "i-xxxx",
+          "instanceId": "i-xxxxxxxx",
           "runAsUser": "bk6dev1",
-          "jobName": "GV7#ECM#box#ECM_GL_VEND_ADHOC_DEVL1"
+          "jobName": "GV7#SAM#cmd#CAL_SERVICES_UPDATE_STAGE_DEVL1"
         }
       }
 
-    You can also pass detail.command if you want to override what runs.
-    If detail.command is NOT passed, we auto-build a command that prints Autosys status.
+    You can also pass:
+      detail.command  -> overrides command creation entirely (advanced).
     """
     print("EVENT:", json.dumps(event))
 
@@ -93,22 +155,20 @@ def lambda_handler(event, context):
     run_as_user = detail.get("runAsUser") or os.environ.get("DEFAULT_RUN_AS_USER", "ec2-user")
     job_name = detail.get("jobName") or os.environ.get("DEFAULT_AUTOSYS_JOB", "")
     document_name = os.environ.get("DOCUMENT_NAME", "fundactng-shellssmdoc-stepfunc")
+    cw_log_group = os.environ.get("SSM_CW_LOG_GROUP", "/ssm/autosys-trigger")
 
     if not instance_id:
         return {"ok": False, "error": "Missing instanceId (detail.instanceId or DEFAULT_INSTANCE_ID env var)"}
 
-    # Either use caller-provided command, or build a proof command from jobName
+    # Build a command that prints explicit start confirmation tokens
     command = detail.get("command")
     if not command:
         if not job_name:
             return {
                 "ok": False,
-                "error": "Missing command and jobName. Provide detail.command or detail.jobName (or DEFAULT_AUTOSYS_JOB env var)."
+                "error": "Missing jobName and command. Provide detail.jobName or detail.command (or DEFAULT_AUTOSYS_JOB env var)."
             }
-        command = build_autosys_proof_command(job_name)
-
-    # CloudWatch log group for SSM output (optional)
-    cw_log_group = os.environ.get("SSM_CW_LOG_GROUP", "/ssm/autosys-trigger")
+        command = build_autosys_start_confirmation_command(job_name)
 
     # 1) Send SSM command
     try:
@@ -119,7 +179,7 @@ def lambda_handler(event, context):
                 "command": [command],
                 "runAsUser": [run_as_user],
             },
-            Comment=f"Autosys trigger + status via {document_name}",
+            Comment=f"Autosys start confirmation via {document_name}",
             CloudWatchOutputConfig={
                 "CloudWatchOutputEnabled": True,
                 "CloudWatchLogGroupName": cw_log_group
@@ -131,32 +191,41 @@ def lambda_handler(event, context):
     command_id = resp["Command"]["CommandId"]
     print("SSM CommandId:", command_id)
 
-    # 2) Wait until the command finishes so we can collect stdout/stderr (which contains Autosys status)
+    # 2) Wait until command finishes so we can collect stdout/stderr
     try:
         inv = wait_until_done(command_id, instance_id, timeout_seconds=900, poll_seconds=3)
     except Exception as e:
         return {
             "ok": False,
-            "error": "Failed waiting for SSM completion",
-            "commandId": command_id,
+            "error": "Failed waiting for completion",
             "instanceId": instance_id,
+            "runAsUser": run_as_user,
+            "documentName": document_name,
+            "commandId": command_id,
             "cloudwatchLogGroup": cw_log_group,
             "details": str(e)
         }
 
-    stdout = inv.get("StandardOutputContent", "") or ""
-    stderr = inv.get("StandardErrorContent", "") or ""
+    stdout = (inv.get("StandardOutputContent") or "").strip()
+    stderr = (inv.get("StandardErrorContent") or "").strip()
 
-    # 3) Return Autosys job status evidence (from stdout)
-    # We return full stdout because it includes autostatus/autorep output now.
+    # Parse explicit proof line
+    start_confirmed = False
+    for ln in stdout.splitlines():
+        if ln.strip() == "START_CONFIRMED=YES":
+            start_confirmed = True
+            break
+
+    # Return ONLY what you care about: did the command start the Autosys job + evidence
     return {
-        "ok": inv.get("Status") == "Success",
+        "ok": True,  # lambda completed; do not confuse with autosys success
+        "autosysJobName": job_name,
+        "autosysStartedConfirmed": start_confirmed,  # strong confirmation flag
+        "startEvidence": parse_start_evidence(stdout),  # includes SENDEVENT_OUTPUT + AUTOSTATUS_OUTPUT
+        "autosysStdErr": stderr,  # keep if something fails
         "instanceId": instance_id,
         "runAsUser": run_as_user,
         "documentName": document_name,
         "commandId": command_id,
-        "jobName": job_name,
-        "autosysOutput": stdout.strip(),
-        "autosysError": stderr.strip(),
         "cloudwatchLogGroup": cw_log_group
     }
