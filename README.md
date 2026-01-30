@@ -1,75 +1,186 @@
-- Meeting title: Verimo Setup Options Review
-- Participants (as inferred): Speaker 1 (primary presenter), others (questions/comments from Crystal and unnamed speakers); meeting focused on deployment/setup decisions and access controls.
+import os
+import json
+import time
+import boto3
+import botocore
+import re
 
-Context and purpose
-- Purpose: Decide how to set up Verimo in production and confirm access/roles for emergency troubleshooting.
-- Two high-level setup approaches were proposed and compared: manual in-prod setup vs. creating and using an AMI image.
+ssm = boto3.client("ssm")
 
-Option A — Manual production setup (described as “prod one” / first option)
-- Process:
-  - Install Verimo manually on a production Windows box.
-  - Run required manual steps to configure and confirm the environment.
-  - Execute/verify automation scripts run as expected after manual install.
-  - Once fully configured and validated, create an AMI from that manually configured prod instance for future reuse.
-- Pros implied:
-  - Ensures initial setup is done in prod environment directly.
-  - The AMI will reflect an already validated prod configuration.
-- Considerations:
-  - Manual work upfront each time for initial installs.
-  - Need to ensure nothing sensitive or non-prod artifacts are introduced when creating AMI (although this is more explicitly discussed for Option B).
+# ---------- helpers (SSM eventual consistency) ----------
+def _err_code(e: Exception) -> str:
+    if isinstance(e, botocore.exceptions.ClientError):
+        return e.response.get("Error", {}).get("Code", "")
+    return ""
 
-Option B — Create sanitized AMI from pre-prod (image-first approach)
-- Process:
-  - Use existing non-prod / pre-prod instance which already has Verimo installed and setup steps applied.
-  - Remove all data-related artifacts and pre-prod-specific data from that instance (sanitize it).
-  - Create an AMI of the sanitized pre-prod instance.
-  - Use that AMI to launch prod instances in future.
-- Alternative within Option B:
-  - Instead of sanitizing pre-prod, first perform a one-time manual prod setup and then create an AMI from that prod instance (this overlaps with Option A’s end state).
-- Pros implied:
-  - Faster spin-up for future instances using a prepared image.
-  - Can standardize and automate builds once AMI is available.
-- Risks & controls:
-  - Risk of accidentally pushing pre-prod data to production if the pre-prod instance is not fully sanitized.
-  - Need to run the AMI creation and transfer through appropriate guardrails/review to ensure no data leakage to prod.
-  - Crystal raised questions about feasibility and guardrail checks.
+def wait_for_invocation(command_id: str, instance_id: str, timeout_seconds: int = 120, poll_seconds: int = 2):
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        try:
+            return ssm.get_command_invocation(CommandId=command_id, InstanceId=instance_id)
+        except botocore.exceptions.ClientError as e:
+            if _err_code(e) == "InvocationDoesNotExist":
+                time.sleep(poll_seconds)
+                continue
+            raise
+    raise TimeoutError(f"Timed out waiting for invocation. command_id={command_id}, instance_id={instance_id}")
 
-Access, roles, and emergency troubleshooting
-- Topic: Confirming a role that grants Don and Kevin permission to log into the Windows box.
-- Purpose of role:
-  - Not for routine manual steps; intended for worst-case scenarios or emergency troubleshooting (e.g., to check what went wrong, view events).
-  - Allows login and monitoring of Verimo process events and relevant system events.
-- Current state discussed:
-  - A role request has been made (or is planned) to give Don and Kevin access; need confirmation that it exists and is properly configured.
-  - The role in pre-prod exists and is being referenced as the model for prod access.
+def run_ssm_and_get_output(document_name: str, instance_id: str, run_as_user: str, command: str, timeout_seconds: int = 300):
+    """Send SSM command and return stdout/stderr. (We use SSM only as transport, not as 'status'.)"""
+    resp = ssm.send_command(
+        DocumentName=document_name,
+        InstanceIds=[instance_id],
+        Parameters={"command": [command], "runAsUser": [run_as_user]},
+        Comment="Autosys trigger/status check"
+    )
 
-Action items (as recorded in meeting summary, assignee listed as Speaker 0 in transcript summary)
-- Decide on the Verimo setup approach and document the chosen approach so the team can proceed (manual prod setup vs. AMI-based approach).
-- If choosing AMI from pre-prod:
-  - Create an AMI from pre-prod after removing all data artifacts.
-  - Perform guardrail/review to ensure no pre-prod data is pushed to prod.
-  - Deliver sanitized AMI to production.
-- If choosing manual-first:
-  - Manually configure the Windows box in production.
-  - Create an AMI from that manually configured instance and use it for future launches.
-- Confirm that the requested role granting Don and Kevin permission to log into the Windows box exists and that access is configured strictly for emergency troubleshooting and monitoring.
+    command_id = resp["Command"]["CommandId"]
 
-Clarifications and decisions needed (next steps for the team)
-- Team must choose between:
-  - Manual initial prod setup then AMI creation (Option A), or
-  - Sanitize pre-prod and create AMI for prod (Option B).
-- Define and document guardrail/review process and responsible party to prevent data leakage from pre-prod to prod.
-- Confirm the role creation and specific permissions for Don and Kevin; decide whether role mirrors pre-prod role exactly or needs adjustments for prod.
-- Assign owners and deadlines for:
-  - AMI creation and sanitization,
-  - Guardrail compliance review,
-  - Manual prod setup (if chosen),
-  - Role configuration and verification for Don and Kevin.
+    inv = wait_for_invocation(command_id, instance_id, timeout_seconds=min(timeout_seconds, 120))
+    deadline = time.time() + timeout_seconds
 
-Precise points mentioned in transcript worth noting
-- Two options repeated multiple times: manual prod install vs. create AMI.
-- Concern about pushing pre-prod data to prod — guardrails/review emphasized.
-- The role is explicitly for troubleshooting/worst-case scenarios, not regular manual work.
-- Speaker 1 repeatedly asked for confirmation to move forward after addressing these two points.
+    while time.time() < deadline:
+        status = inv.get("Status")
+        if status in {"Success", "Failed", "TimedOut", "Cancelled"}:
+            return {
+                "commandId": command_id,
+                "stdout": inv.get("StandardOutputContent", "") or "",
+                "stderr": inv.get("StandardErrorContent", "") or "",
+                "transportStatus": status
+            }
+        time.sleep(2)
+        inv = ssm.get_command_invocation(CommandId=command_id, InstanceId=instance_id)
 
-No verbatim quotes extracted beyond paraphrase (transcript available in meeting context).
+    # still return whatever we have
+    return {
+        "commandId": command_id,
+        "stdout": inv.get("StandardOutputContent", "") or "",
+        "stderr": inv.get("StandardErrorContent", "") or "",
+        "transportStatus": inv.get("Status", "Unknown")
+    }
+
+# ---------- Autosys parsing ----------
+def parse_autosys_status(autostatus_output: str) -> str:
+    """
+    Try to extract job status from autostatus output.
+    Different autosys setups vary; we return best-effort status token.
+    """
+    txt = (autostatus_output or "").strip()
+    if not txt:
+        return "UNKNOWN"
+
+    upper = txt.upper()
+
+    # Common statuses that often appear in output
+    for token in ["SUCCESS", "FAILURE", "FAILED", "RUNNING", "STARTING", "ACTIVE", "INACTIVE", "ON_ICE", "ON_HOLD", "TERMINATED"]:
+        if token in upper:
+            if token == "FAILED":
+                return "FAILURE"
+            return token
+
+    # Sometimes output includes something like: "Status: RUNNING"
+    m = re.search(r"STATUS\s*[:=]\s*([A-Z_]+)", upper)
+    if m:
+        return m.group(1)
+
+    return "UNKNOWN"
+
+def classify_terminal(status_token: str) -> bool:
+    return status_token in {"SUCCESS", "FAILURE", "TERMINATED"}
+
+# ---------- main ----------
+def lambda_handler(event, context):
+    """
+    Expected event.detail:
+      instanceId (required)
+      runAsUser  (required/optional)
+      jobName    (required)
+      forceStart (optional true/false)
+      pollSeconds (optional, default 15)
+      maxWaitSeconds (optional, default 600)
+
+    Output: Autosys job status + proof outputs from autostatus/autorep
+    """
+
+    detail = event.get("detail") or {}
+
+    instance_id = detail.get("instanceId") or os.environ.get("DEFAULT_INSTANCE_ID")
+    run_as_user = detail.get("runAsUser") or os.environ.get("DEFAULT_RUN_AS_USER", "ec2-user")
+    job_name = detail.get("jobName")
+    force_start = bool(detail.get("forceStart", True))
+
+    poll_seconds = int(detail.get("pollSeconds", 15))
+    max_wait_seconds = int(detail.get("maxWaitSeconds", 600))
+
+    document_name = os.environ.get("DOCUMENT_NAME", "fundactng-shellssmdoc-stepfunc")
+
+    if not instance_id:
+        return {"ok": False, "error": "Missing instanceId"}
+    if not job_name:
+        return {"ok": False, "error": "Missing jobName"}
+
+    # 1) Trigger the job
+    start_cmd = f'sendevent -E {"FORCE_STARTJOB" if force_start else "STARTJOB"} -J "{job_name}"'
+    trigger = run_ssm_and_get_output(document_name, instance_id, run_as_user, start_cmd, timeout_seconds=120)
+
+    # 2) Poll Autosys for job status (this is the REAL status you want)
+    # We'll use autostatus first; autorep is added as extra proof at the end.
+    deadline = time.time() + max_wait_seconds
+    history = []
+
+    last_status = "UNKNOWN"
+    last_autostatus_out = ""
+    last_autostatus_err = ""
+
+    while time.time() < deadline:
+        status_cmd = f'autostatus -J "{job_name}"'
+        chk = run_ssm_and_get_output(document_name, instance_id, run_as_user, status_cmd, timeout_seconds=120)
+
+        out = chk["stdout"]
+        err = chk["stderr"]
+        status_token = parse_autosys_status(out)
+
+        history.append({
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "autosysStatus": status_token,
+            "autostatusStdoutSample": out[:500],
+            "autostatusStderrSample": err[:300],
+        })
+
+        last_status = status_token
+        last_autostatus_out = out
+        last_autostatus_err = err
+
+        if classify_terminal(status_token):
+            break
+
+        time.sleep(poll_seconds)
+
+    # 3) Extra proof: autorep summary (optional but useful)
+    rep_cmd = f'autorep -J "{job_name}" -q'
+    rep = run_ssm_and_get_output(document_name, instance_id, run_as_user, rep_cmd, timeout_seconds=120)
+
+    # Decide success based on Autosys status, not SSM
+    ok = (last_status == "SUCCESS")
+
+    return {
+        "ok": ok,
+        "jobName": job_name,
+        "autosysStatus": last_status,               # <---- THIS is what you asked for
+        "polledForSeconds": max_wait_seconds,
+        "pollSeconds": poll_seconds,
+
+        # Proof outputs
+        "triggerCommand": start_cmd,
+        "triggerStdout": trigger.get("stdout", ""),
+        "triggerStderr": trigger.get("stderr", ""),
+
+        "finalAutostatusStdout": last_autostatus_out,
+        "finalAutostatusStderr": last_autostatus_err,
+
+        "autorepStdout": rep.get("stdout", ""),
+        "autorepStderr": rep.get("stderr", ""),
+
+        # small history so you can see progression (RUNNING -> SUCCESS/FAILURE)
+        "statusChecks": history[-10:],  # keep last 10 checks
+    }
