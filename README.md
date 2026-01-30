@@ -3,6 +3,7 @@ import json
 import time
 import boto3
 import botocore
+import re
 from datetime import datetime, date
 from decimal import Decimal
 import base64
@@ -76,8 +77,7 @@ def wait_until_done(command_id: str, instance_id: str, timeout_seconds: int = 90
 
 def get_plugin_details(command_id: str, instance_id: str):
     """
-    Details=True often contains the real stdout/stderr and timing.
-    Must be JSON-sanitized to avoid datetime marshal error.
+    Details=True often contains extra timing/metadata; sanitize for JSON.
     """
     try:
         resp = ssm.list_command_invocations(CommandId=command_id, InstanceId=instance_id, Details=True)
@@ -97,17 +97,13 @@ def get_plugin_details(command_id: str, instance_id: str):
 
 
 # ----------------------------
-# Autosys debug command builder
-# (NO SINGLE QUOTES, safe for your SSM doc's: bash -c '...; {{ command }}')
+# Autosys: command builder (robust "started" confirmation)
+#   Confirmation based on:
+#     - SENDEVENT_RC==0 (request accepted)
+#     - OR full autorep row changed
+#     - OR LastStart changed (and after >= before)
 # ----------------------------
 def build_debug_autosys_command(job_name: str) -> str:
-    """
-    Strong "started" confirmation:
-      - Run autorep before
-      - sendevent start
-      - Run autorep after
-      - START_CONFIRMED=YES if sendevent rc==0 OR autorep changed
-    """
     j = (job_name or "").replace("\\", "\\\\").replace('"', '\\"')
 
     cmd = f"""
@@ -121,14 +117,21 @@ echo "PATH=$PATH" 2>&1
 
 echo "__CHECK_BINARIES__" 2>&1
 command -v sendevent 2>&1 || echo "MISSING:sendevent" 2>&1
-command -v autostatus 2>&1 || echo "MISSING:autostatus" 2>&1
 command -v autorep 2>&1 || echo "MISSING:autorep" 2>&1
+command -v autostatus 2>&1 || echo "MISSING:autostatus" 2>&1
 
 echo "__BEFORE_AUTOREP__" 2>&1
-BEFORE=$(autorep -J "{j}" -q 2>&1)
-echo "AUTOREP_BEFORE=$BEFORE" 2>&1
+BEFORE_RAW=$(autorep -J "{j}" -q 2>&1)
+echo "AUTOREP_BEFORE_RAW_BEGIN" 2>&1
+echo "$BEFORE_RAW" 2>&1
+echo "AUTOREP_BEFORE_RAW_END" 2>&1
+BEFORE_LINE=$(echo "$BEFORE_RAW" | grep -E "^{j}[[:space:]]" | tail -n 1)
+if [ -z "$BEFORE_LINE" ]; then BEFORE_LINE=$(echo "$BEFORE_RAW" | tail -n 1); fi
+echo "AUTOREP_BEFORE_LINE=$BEFORE_LINE" 2>&1
+BEFORE_START=$(echo "$BEFORE_LINE" | awk '{{print $2" "$3}}')
+echo "AUTOREP_BEFORE_LASTSTART=$BEFORE_START" 2>&1
 
-echo "__STEP_SENDEVENT__" 2>&1
+echo "__SENDEVENT__" 2>&1
 SE_OUT=$(sendevent -E FORCE_STARTJOB -J "{j}" 2>&1)
 SE_RC=$?
 echo "SENDEVENT_RC=$SE_RC" 2>&1
@@ -138,14 +141,40 @@ echo "__SLEEP__" 2>&1
 sleep 5
 
 echo "__AFTER_AUTOREP__" 2>&1
-AFTER=$(autorep -J "{j}" -q 2>&1)
-echo "AUTOREP_AFTER=$AFTER" 2>&1
+AFTER_RAW=$(autorep -J "{j}" -q 2>&1)
+echo "AUTOREP_AFTER_RAW_BEGIN" 2>&1
+echo "$AFTER_RAW" 2>&1
+echo "AUTOREP_AFTER_RAW_END" 2>&1
+AFTER_LINE=$(echo "$AFTER_RAW" | grep -E "^{j}[[:space:]]" | tail -n 1)
+if [ -z "$AFTER_LINE" ]; then AFTER_LINE=$(echo "$AFTER_RAW" | tail -n 1); fi
+echo "AUTOREP_AFTER_LINE=$AFTER_LINE" 2>&1
+AFTER_START=$(echo "$AFTER_LINE" | awk '{{print $2" "$3}}')
+echo "AUTOREP_AFTER_LASTSTART=$AFTER_START" 2>&1
 
 echo "__START_CONFIRMATION_CHECK__" 2>&1
 START=NO
-if [ "$SE_RC" -eq 0 ]; then START=YES; fi
-if [ "$BEFORE" != "$AFTER" ]; then START=YES; fi
+REASON="none"
+
+# 1) sendevent accepted
+if [ "$SE_RC" -eq 0 ]; then
+  START=YES
+  REASON="sendevent_rc_0"
+fi
+
+# 2) full autorep row changed (very robust)
+if [ "$BEFORE_LINE" != "$AFTER_LINE" ] && [ -n "$AFTER_LINE" ]; then
+  START=YES
+  if [ "$REASON" = "none" ]; then REASON="autorep_line_changed"; else REASON="$REASON,autorep_line_changed"; fi
+fi
+
+# 3) laststart changed (and not empty) — expected to be newer; if older, treat as parse issue but still keep line-changed logic
+if [ -n "$BEFORE_START" ] && [ -n "$AFTER_START" ] && [ "$BEFORE_START" != "$AFTER_START" ]; then
+  START=YES
+  if [ "$REASON" = "none" ]; then REASON="laststart_changed"; else REASON="$REASON,laststart_changed"; fi
+fi
+
 echo "START_CONFIRMED=$START" 2>&1
+echo "START_REASON=$REASON" 2>&1
 
 echo "__AUTOSYS_DEBUG_END__" 2>&1
 """
@@ -153,32 +182,59 @@ echo "__AUTOSYS_DEBUG_END__" 2>&1
     return " ".join(line.strip() for line in cmd.splitlines() if line.strip())
 
 
-def extract_evidence(stdout: str):
+# ----------------------------
+# Parse helpers
+# ----------------------------
+def find_kv(stdout: str, key: str):
+    if not stdout:
+        return None
+    for ln in stdout.splitlines():
+        if ln.startswith(key + "="):
+            return ln.split("=", 1)[1].strip()
+    return None
+
+
+def parse_autosys_mmddyyyy_hhmmss(ts: str):
     """
-    Pull the important lines for quick viewing.
+    Autosys: MM/DD/YYYY HH:MM:SS  -> return sortable ISO (no tz)
     """
+    if not ts:
+        return None
+    ts = ts.strip()
+    if not re.match(r"^\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2}:\d{2}$", ts):
+        return None
+    mm, dd, yyyy = ts[0:2], ts[3:5], ts[6:10]
+    hh, mi, ss = ts[11:13], ts[14:16], ts[17:19]
+    return f"{yyyy}-{mm}-{dd}T{hh}:{mi}:{ss}"
+
+
+def extract_evidence(stdout: str, max_lines: int = 500):
     if not stdout:
         return []
-    keep_prefixes = (
+    keep = (
         "__AUTOSYS_DEBUG_",
         "__CHECK_",
         "__BEFORE_",
         "__AFTER_",
-        "__STEP_",
+        "__SENDEVENT__",
         "__SLEEP__",
+        "__START_CONFIRMATION_CHECK__",
         "MISSING:",
-        "AUTOREP_BEFORE=",
-        "AUTOREP_AFTER=",
+        "AUTOREP_BEFORE_LINE=",
+        "AUTOREP_AFTER_LINE=",
+        "AUTOREP_BEFORE_LASTSTART=",
+        "AUTOREP_AFTER_LASTSTART=",
         "SENDEVENT_RC=",
         "SENDEVENT_OUTPUT=",
-        "START_CONFIRMED="
+        "START_CONFIRMED=",
+        "START_REASON=",
     )
-    ev = []
+    out = []
     for ln in stdout.splitlines():
         s = ln.strip()
-        if s.startswith(keep_prefixes):
-            ev.append(s)
-    return ev[:400]
+        if s.startswith(keep):
+            out.append(s)
+    return out[:max_lines]
 
 
 # ----------------------------
@@ -190,7 +246,6 @@ def lambda_handler(event, context):
 
     detail = event.get("detail") or {}
 
-    # Required/Defaulted inputs
     instance_id = detail.get("instanceId") or os.environ.get("DEFAULT_INSTANCE_ID")
     run_as_user = detail.get("runAsUser") or os.environ.get("DEFAULT_RUN_AS_USER", "ec2-user")
 
@@ -200,13 +255,9 @@ def lambda_handler(event, context):
         or "fundactng-shellssmdoc-stepfunc"
     )
 
-    # Enable CloudWatch output from SSM for deeper debug
     cw_log_group = os.environ.get("SSM_CW_LOG_GROUP", "/ssm/autosys-trigger")
 
-    # Prefer jobName -> build safe debug command (recommended)
     job_name = detail.get("jobName") or os.environ.get("DEFAULT_AUTOSYS_JOB", "")
-
-    # Optional override: if provided, we run exactly this (be careful with quoting)
     command_override = detail.get("command")
 
     if not instance_id:
@@ -221,13 +272,11 @@ def lambda_handler(event, context):
         command = build_debug_autosys_command(job_name)
         print("Built autosys debug command from jobName")
 
-    # Print exact command being sent to SSM
     print("SSM DocumentName:", document_name)
     print("SSM InstanceId:", instance_id)
     print("SSM runAsUser:", run_as_user)
     print("SSM Command (exact):", command)
 
-    # Send SSM command
     resp = ssm.send_command(
         DocumentName=document_name,
         InstanceIds=[instance_id],
@@ -235,7 +284,7 @@ def lambda_handler(event, context):
             "command": [command],
             "runAsUser": [run_as_user],
         },
-        Comment="Autosys trigger + start confirmation",
+        Comment="Autosys trigger + start confirmation (autorep last start)",
         CloudWatchOutputConfig={
             "CloudWatchOutputEnabled": True,
             "CloudWatchLogGroupName": cw_log_group
@@ -245,36 +294,83 @@ def lambda_handler(event, context):
     command_id = resp["Command"]["CommandId"]
     print("SSM CommandId:", command_id)
 
-    # Wait for completion (SSM execution completion, not Autosys completion)
     inv = wait_until_done(command_id, instance_id, timeout_seconds=900, poll_seconds=3)
 
     stdout = inv.get("StandardOutputContent") or ""
     stderr = inv.get("StandardErrorContent") or ""
 
-    # Evidence + strong start confirmation flag
-    evidence = extract_evidence(stdout)
-    started_confirmed = any(line.strip() == "START_CONFIRMED=YES" for line in stdout.splitlines())
+    # Parse key outputs
+    before_line = find_kv(stdout, "AUTOREP_BEFORE_LINE")
+    after_line = find_kv(stdout, "AUTOREP_AFTER_LINE")
+    before_ls_raw = find_kv(stdout, "AUTOREP_BEFORE_LASTSTART")
+    after_ls_raw = find_kv(stdout, "AUTOREP_AFTER_LASTSTART")
+    se_rc = find_kv(stdout, "SENDEVENT_RC")
+    se_out = find_kv(stdout, "SENDEVENT_OUTPUT")
+    start_flag = find_kv(stdout, "START_CONFIRMED")
+    start_reason = find_kv(stdout, "START_REASON")
 
-    # Extra plugin info (JSON safe)
+    before_ls_iso = parse_autosys_mmddyyyy_hhmmss(before_ls_raw)
+    after_ls_iso = parse_autosys_mmddyyyy_hhmmss(after_ls_raw)
+
+    # Confirmation signals:
+    line_changed = (before_line is not None and after_line is not None and before_line != after_line)
+    laststart_changed = (before_ls_iso is not None and after_ls_iso is not None and before_ls_iso != after_ls_iso)
+
+    # "After older than before" is NOT confirmation; treat as parse/sampling issue
+    laststart_after_older = (
+        before_ls_iso is not None and after_ls_iso is not None and after_ls_iso < before_ls_iso
+    )
+
+    # Final decision: require one strong signal
+    autosys_started_confirmed = (
+        (start_flag == "YES")
+        or line_changed
+        or (laststart_changed and not laststart_after_older)
+        or (se_rc == "0")  # accepted by scheduler, weaker but still useful
+    )
+
+    evidence = extract_evidence(stdout)
+
     plugin = get_plugin_details(command_id, instance_id)
 
-    # Return JSON-safe response
     return json_safe({
         "ok": True,
+
         "autosysJobName": job_name,
-        "autosysStartedConfirmed": started_confirmed,
+
+        # main result
+        "autosysStartedConfirmed": autosys_started_confirmed,
+        "autosysStartReason": start_reason,
+
+        # strongest confirmations
+        "autorepLineChanged": line_changed,
+        "autosysLastStartBefore": before_ls_raw,
+        "autosysLastStartAfter": after_ls_raw,
+        "autosysLastStartBeforeIso": before_ls_iso,
+        "autosysLastStartAfterIso": after_ls_iso,
+        "autosysLastStartChanged": laststart_changed,
+        "autosysLastStartAfterOlderThanBefore": laststart_after_older,
+
+        # sendevent info
+        "sendeventRc": se_rc,
+        "sendeventOutput": se_out,
+
+        # quick evidence lines
         "startEvidence": evidence,
 
+        # raw logs for debugging
         "rawStdout_first4000": stdout[:4000],
         "rawStderr_first4000": stderr[:4000],
         "rawStdout_len": len(stdout),
         "rawStderr_len": len(stderr),
 
+        # ssm tracking
         "instanceId": instance_id,
         "runAsUser": run_as_user,
         "documentName": document_name,
         "commandId": command_id,
         "cloudwatchLogGroup": cw_log_group,
 
+        # plugin details
         **plugin
     })
