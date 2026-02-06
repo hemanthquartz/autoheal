@@ -173,9 +173,16 @@ echo "which sendevent after profile: $(command -v sendevent || true)"
 echo "which autorep after profile: $(command -v autorep || true)"
 echo "---------------------------"
 
-# Extract JOB after -J (supports unquoted or quoted job token)
-# We assume job token itself has no spaces (yours doesn't).
-JOB="$(echo "$CMD" | sed -n 's/.*-J[[:space:]]*"\{0,1\}\([^"[:space:]]*\).*/\1/p')"
+# Extract JOB after -J using POSIX-safe awk (no regex portability issues)
+JOB="$(echo "$CMD" | awk '{
+  for (i=1; i<=NF; i++) {
+    if ($i == "-J" && (i+1) <= NF) {
+      print $(i+1);
+      exit;
+    }
+  }
+}')"
+
 echo "Extracted JOB token: [$JOB]"
 
 if [ -z "$JOB" ]; then
