@@ -1,8 +1,10 @@
+# index.py
+import os
 import json
 import time
 import re
-import os
 from datetime import datetime
+from urllib.parse import unquote_plus
 
 import boto3
 from botocore.exceptions import ClientError
@@ -12,92 +14,12 @@ s3 = boto3.client("s3")
 
 TERMINAL_STATUSES = {"Success", "Failed", "TimedOut", "Cancelled", "Cancelling"}
 
-# -----------------------------
-# Mapping (filename regex -> FULL sendevent command)
-# -----------------------------
-LOCAL_MAPPING_FILE = os.path.join(os.path.dirname(__file__), "autosys_job_mapping.json")
-_autosys_cmd_map_cache = None  # cached dict {regex_pattern: "sendevent ... -j JOB"}
-
-
-def _load_autosys_command_map() -> dict:
-    """
-    Loads mapping JSON from:
-      1) S3 if env vars set: AUTOSYS_MAPPING_S3_BUCKET + AUTOSYS_MAPPING_S3_KEY
-      2) local file autosys_job_mapping.json (packaged with Lambda)
-    Caches for warm invocations.
-    """
-    global _autosys_cmd_map_cache
-    if _autosys_cmd_map_cache is not None:
-        return _autosys_cmd_map_cache
-
-    s3_bucket = os.environ.get("AUTOSYS_MAPPING_S3_BUCKET", "").strip()
-    s3_key = os.environ.get("AUTOSYS_MAPPING_S3_KEY", "").strip()
-
-    if s3_bucket and s3_key:
-        try:
-            obj = s3.get_object(Bucket=s3_bucket, Key=s3_key)
-            body = obj["Body"].read().decode("utf-8")
-            mapping = json.loads(body)
-            if not isinstance(mapping, dict) or not mapping:
-                raise ValueError("S3 mapping JSON is empty or not a dict")
-            _autosys_cmd_map_cache = mapping
-            print(f"Loaded Autosys mapping from S3: s3://{s3_bucket}/{s3_key} ({len(mapping)} rules)")
-            return _autosys_cmd_map_cache
-        except Exception as e:
-            print(f"ERROR loading Autosys mapping from S3: s3://{s3_bucket}/{s3_key} -> {e}")
-            raise
-
-    # Local fallback
-    try:
-        with open(LOCAL_MAPPING_FILE, "r", encoding="utf-8") as f:
-            mapping = json.load(f)
-        if not isinstance(mapping, dict) or not mapping:
-            raise ValueError("Local mapping JSON is empty or not a dict")
-        _autosys_cmd_map_cache = mapping
-        print(f"Loaded Autosys mapping from local file: {LOCAL_MAPPING_FILE} ({len(mapping)} rules)")
-        return _autosys_cmd_map_cache
-    except Exception as e:
-        print(f"ERROR loading Autosys mapping from local file: {LOCAL_MAPPING_FILE} -> {e}")
-        raise
-
-
-def resolve_autosys_command(object_key: str) -> str:
-    """
-    Finds the FULL Autosys command for the given S3 object key's filename.
-    """
-    mapping = _load_autosys_command_map()
-    filename = (object_key or "").split("/")[-1].strip()
-
-    if not filename:
-        raise ValueError(f"Cannot resolve command: empty filename derived from key: {object_key}")
-
-    for pattern, command in mapping.items():
-        try:
-            if re.match(pattern, filename):
-                print(f"Autosys mapping matched. filename='{filename}' pattern='{pattern}' command='{command}'")
-                return command
-        except re.error as rex:
-            raise ValueError(f"Invalid regex in mapping: '{pattern}' -> {rex}")
-
-    raise ValueError(f"No Autosys command mapping found for filename: {filename} (key: {object_key})")
-
-
-def extract_job_from_command(cmd: str) -> str:
-    """
-    Extracts job name from a sendevent command that includes: -j <JOBNAME>
-    Example: sendevent -E FORCE_START_JOB -j GV7#SAM#box#HANGING_UPB_ADHOC_PROD
-    """
-    m = re.search(r"(?:^|\s)-j\s+([^\s]+)", cmd or "")
-    if not m:
-        raise ValueError(f"Cannot find '-j <JOB>' in command: {cmd}")
-    return m.group(1).strip()
-
 
 def sanitize(s: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9_\-\/#]", "_", s)
+    return re.sub(r"[^a-zA-Z0-9_\-\/\.]", "_", s or "")
 
 
-def wait_for_command(command_id: str, instance_id: str, timeout_seconds: int = 900, poll_seconds: int = 3):
+def wait_for_command(command_id: str, instance_id: str, timeout_seconds: int = 900, poll_seconds: int = 3) -> dict:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         try:
@@ -117,7 +39,7 @@ def wait_for_command(command_id: str, instance_id: str, timeout_seconds: int = 9
     raise TimeoutError(f"Timed out waiting for SSM command {command_id} on {instance_id}")
 
 
-def s3_get_json_with_retry(bucket: str, key: str, timeout_seconds: int = 120, poll_seconds: int = 3):
+def s3_get_json_with_retry(bucket: str, key: str, timeout_seconds: int = 180, poll_seconds: int = 3) -> dict:
     deadline = time.time() + timeout_seconds
     last_err = None
 
@@ -126,7 +48,6 @@ def s3_get_json_with_retry(bucket: str, key: str, timeout_seconds: int = 120, po
             obj = s3.get_object(Bucket=bucket, Key=key)
             body = obj["Body"].read().decode("utf-8")
             return json.loads(body)
-
         except ClientError as e:
             last_err = e
             code = e.response.get("Error", {}).get("Code", "")
@@ -134,7 +55,6 @@ def s3_get_json_with_retry(bucket: str, key: str, timeout_seconds: int = 120, po
                 time.sleep(poll_seconds)
                 continue
             raise
-
         except Exception as e:
             last_err = e
             time.sleep(poll_seconds)
@@ -147,92 +67,186 @@ def parse_mmddyyyy_hhmmss(s: str):
     return datetime.strptime(s.strip(), "%m/%d/%Y %H:%M:%S")
 
 
+def load_autosys_mapping() -> dict:
+    """
+    autosys_job_mapping.json must be packaged alongside this index.py
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    mapping_path = os.path.join(here, "autosys_job_mapping.json")
+    if not os.path.exists(mapping_path):
+        raise FileNotFoundError(f"autosys_job_mapping.json not found at {mapping_path}")
+    with open(mapping_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict) or not data:
+        raise ValueError("autosys_job_mapping.json must be a non-empty JSON object of {pattern: command}")
+    return data
+
+
+def pick_autosys_command(inbound_key: str, mapping: dict) -> str | None:
+    """
+    Matches mapping patterns (regex) to the inbound filename first, then full key.
+    Your patterns look like: ^SAM_..._Start_.*\\.complete$
+    """
+    filename = os.path.basename(inbound_key or "")
+
+    # 1) filename first (most common)
+    for pattern, cmd in mapping.items():
+        try:
+            if re.search(pattern, filename):
+                return cmd
+        except re.error:
+            # bad regex pattern in mapping - skip so lambda doesn't crash
+            continue
+
+    # 2) fallback full key
+    for pattern, cmd in mapping.items():
+        try:
+            if re.search(pattern, inbound_key or ""):
+                return cmd
+        except re.error:
+            continue
+
+    return None
+
+
+def extract_job_name_from_command(cmd: str) -> str | None:
+    """
+    Tries to pull the Autosys job name from a sendevent command:
+      sendevent -E FORCE_START_JOB -j GV7#SAM#box#HANGING_UPB_ADHOC_DEVL1
+    """
+    m = re.search(r"(?:^|\s)-j\s+([^\s]+)", cmd or "")
+    if m:
+        return m.group(1).strip()
+    return None
+
+
 def lambda_handler(event, context):
     print("RAW EVENT:", json.dumps(event, indent=2))
 
+    # Expecting S3 event via EventBridge
     detail = event.get("detail") or {}
     req_params = (detail.get("requestParameters") or {})
     inbound_key = req_params.get("key") or ""
+
+    # If key is URL-encoded (common), decode it
+    inbound_key = unquote_plus(inbound_key)
+
     print("Inbound key:", inbound_key)
 
-    # --- Your current constants (keep as-is) ---
-    bucket = "fundacntg-dev1-ftbu-us-east-1"
-    prefix = "prepare/cin/dflt/SAM/test_ybyo/"
+    if not inbound_key:
+        return {
+            "ok": False,
+            "error": "Missing inbound S3 key in event.detail.requestParameters.key",
+        }
 
-    if not bucket:
+    # ---- Load mapping and derive the correct command from file name ----
+    mapping = load_autosys_mapping()
+    autosys_cmd = pick_autosys_command(inbound_key, mapping)
+
+    if not autosys_cmd:
+        return {
+            "ok": False,
+            "error": "No matching autosys command for inbound file",
+            "inboundKey": inbound_key,
+            "filename": os.path.basename(inbound_key),
+            "hint": "Update autosys_job_mapping.json regex patterns to match the inbound filename/key.",
+        }
+
+    print("Matched autosys command:", autosys_cmd)
+
+    # Optional: extract job name (used only for BEFORE/AFTER last start evidence)
+    job_name = extract_job_name_from_command(autosys_cmd)
+    print("Extracted job name:", job_name)
+
+    # ---- Config (use env vars; defaults shown) ----
+    evidence_bucket = os.environ.get("AUTOSYS_EVIDENCE_BUCKET", "").strip()
+    evidence_prefix = os.environ.get("AUTOSYS_EVIDENCE_PREFIX", "prepare/cin/dflt/SAM/test_ybyo/").strip()
+
+    instance_id = os.environ.get("AUTOSYS_TARGET_INSTANCE_ID", "").strip()  # REQUIRED
+    run_as_user = os.environ.get("AUTOSYS_RUN_AS_USER", "gauhlk").strip()
+    document_name = os.environ.get("AUTOSYS_SSM_DOCUMENT", "fundacntg-shellssmdoc-stepfunc").strip()
+
+    ssm_timeout_seconds = int(os.environ.get("AUTOSYS_SSM_TIMEOUT_SECONDS", "900").strip())
+    ssm_poll_seconds = int(os.environ.get("AUTOSYS_SSM_POLL_SECONDS", "3").strip())
+
+    evidence_timeout_seconds = int(os.environ.get("AUTOSYS_EVIDENCE_TIMEOUT_SECONDS", "180").strip())
+    evidence_poll_seconds = int(os.environ.get("AUTOSYS_EVIDENCE_POLL_SECONDS", "3").strip())
+
+    if not evidence_bucket:
         return {"ok": False, "error": "Missing evidence bucket. Set AUTOSYS_EVIDENCE_BUCKET env var."}
-
-    instance_id = "i-090e6f0a08fa26397"
-    run_as_user = "gauh1k"
-    document_name = (
-        event.get("documentName")
-        or detail.get("documentName")
-        or "fundacntg-shellssmdoc-stepfunc"
-    )
-
     if not instance_id:
-        return {"ok": False, "error": "Missing instanceId"}
+        return {"ok": False, "error": "Missing target instance. Set AUTOSYS_TARGET_INSTANCE_ID env var."}
+    if not document_name:
+        return {"ok": False, "error": "Missing SSM document. Set AUTOSYS_SSM_DOCUMENT env var."}
 
-    # --- CHANGE: resolve FULL command from mapping file ---
-    autosys_command = resolve_autosys_command(inbound_key)
-    job_name = extract_job_from_command(autosys_command)
-
-    print("Resolved autosys_command:", autosys_command)
-    print("Extracted job_name:", job_name)
-
-    # Evidence naming
-    job_safe = sanitize(job_name)
+    # Evidence file naming based on inbound filename
+    filename = os.path.basename(inbound_key)
+    file_tag = sanitize(filename)
     run_id = str(int(time.time()))
-    local_file = f"/tmp/autosys_evidence_{job_safe}_{run_id}.json"
-    s3_key = f"{prefix.rstrip('/')}/{job_safe}/{run_id}.json"
+    local_file = f"/tmp/autosys_evidence_{file_tag}_{run_id}.json"
+    s3_key = f"{evidence_prefix.rstrip('/')}/{file_tag}/{run_id}.json"
 
-    # Runs on EC2:
-    # - BEFORE: autorep last start
-    # - execute full autosys command (sendevent ...)
-    # - AFTER: autorep last start
-    # - save JSON locally and upload to S3
-    remote_script = f"""
+    # ---------------- Remote script ----------------
+    # IMPORTANT:
+    # - Triggers based on mapped command (autosys_cmd)
+    # - Captures BEFORE/AFTER lastStart for that job (if job_name extracted)
+    # - Writes evidence to LOCAL FILE and uploads to S3 (NOT stdout/stderr, NOT Parameter Store)
+    #
+    # Note: We escape quotes inside autosys_cmd for JSON safety.
+    autosys_cmd_escaped = autosys_cmd.replace('"', '\\"')
+    job_name_safe = (job_name or "").replace('"', '\\"')
+
+    remote_script = f"""#!/bin/bash
 set -e
 
-JOB="{job_name}"
-AUTOSYS_CMD='{autosys_command}'
-
-# Load Autosys profile if present
-if [ -f /export/app1/gv7/gv7dev1/src/DEVL1/GV7-util_scripts/gv7_pysrc/config/infa_autosys_profile.ksh ]; then
-  source /export/app1/gv7/gv7dev1/src/DEVL1/GV7-util_scripts/gv7_pysrc/config/infa_autosys_profile.ksh
+# Load Autosys profile if present (adjust path if needed)
+if [ -f /export/appl/gv7/gv7dev1/src/DEVL1/gv7-util_scripts/gv7_pysrc/config/infa_autosys_profile.ksh ]; then
+  source /export/appl/gv7/gv7dev1/src/DEVL1/gv7-util_scripts/gv7_pysrc/config/infa_autosys_profile.ksh
 fi
 
+JOB="{job_name_safe}"
+
 extract_last_start() {{
-  LINE=$(autorep -J "$JOB" | grep "$JOB" | head -n 1 || true)
+  if [ -z "$JOB" ]; then
+    echo ""
+    return 0
+  fi
+
+  # Try to find MM/DD/YYYY HH:MM:SS from autorep output
+  LINE=$(autorep -j "$JOB" 2>/dev/null | grep "$JOB" | head -n 1 || true)
   echo "$LINE" | grep -Eo '[0-9]{{2}}/[0-9]{{2}}/[0-9]{{4}}[[:space:]]+[0-9]{{2}}:[0-9]{{2}}:[0-9]{{2}}' | head -n 1 || true
 }}
 
 BEFORE_TS=$(extract_last_start)
 
-# Run mapped command
-eval "$AUTOSYS_CMD"
+# Trigger job (command comes from autosys_job_mapping.json)
+{autosys_cmd}
 RC=$?
 
 sleep 3
+
 AFTER_TS=$(extract_last_start)
 
 NOW_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 cat > "{local_file}" << EOF
 {{
-  "jobName": "{job_name}",
-  "autosysCommand": "{autosys_command}".replace("\\\\","\\\\\\\\"),
+  "inboundKey": "{inbound_key}",
+  "filename": "{filename}",
+  "autosysCommand": "{autosys_cmd_escaped}",
+  "jobName": "$JOB",
   "lastStartBefore": "$BEFORE_TS",
   "lastStartAfter": "$AFTER_TS",
-  "commandRc": "$RC",
+  "sendeventRc": "$RC",
   "capturedAtUtc": "$NOW_ISO",
   "instanceId": "{instance_id}"
 }}
 EOF
 
-aws s3 cp "{local_file}" "s3://{bucket}/{s3_key}"
-""".strip()
+aws s3 cp "{local_file}" "s3://{evidence_bucket}/{s3_key}"
+"""
 
+    # ---------------- Send to SSM ----------------
     resp = ssm.send_command(
         DocumentName=document_name,
         InstanceIds=[instance_id],
@@ -240,57 +254,65 @@ aws s3 cp "{local_file}" "s3://{bucket}/{s3_key}"
             "command": [remote_script],
             "runAsUser": [run_as_user],
         },
-        Comment="Autosys command executed + evidence saved locally and uploaded to S3"
+        Comment="Autosys trigger derived from inbound file name; evidence saved locally and uploaded to S3",
     )
 
     command_id = resp["Command"]["CommandId"]
     print("SSM CommandId:", command_id)
 
-    inv = wait_for_command(command_id, instance_id, timeout_seconds=900, poll_seconds=3)
+    inv = wait_for_command(
+        command_id,
+        instance_id,
+        timeout_seconds=ssm_timeout_seconds,
+        poll_seconds=ssm_poll_seconds,
+    )
+
     print("SSM Status:", inv.get("Status"), "ResponseCode:", inv.get("ResponseCode"))
 
-    # Read evidence JSON from S3
-    evidence = s3_get_json_with_retry(bucket, s3_key, timeout_seconds=180, poll_seconds=3)
+    # ---------------- Read evidence JSON from S3 ----------------
+    evidence = s3_get_json_with_retry(
+        evidence_bucket,
+        s3_key,
+        timeout_seconds=evidence_timeout_seconds,
+        poll_seconds=evidence_poll_seconds,
+    )
 
     before_ts = (evidence.get("lastStartBefore") or "").strip()
     after_ts = (evidence.get("lastStartAfter") or "").strip()
 
-    autosys_ran_confirmed = False
+    started_confirmed = False
     reason = None
 
-    # --- CHANGE: confirm ran if before != after ---
     if before_ts and after_ts:
         try:
             dt_before = parse_mmddyyyy_hhmmss(before_ts)
             dt_after = parse_mmddyyyy_hhmmss(after_ts)
-            if dt_after != dt_before:
-                autosys_ran_confirmed = True
-                reason = "Confirmed: last start time changed (before != after), Autosys job ran."
+            if dt_after > dt_before:
+                started_confirmed = True
+                reason = "Last Start increased after sendevent (strong confirmation job started)"
             else:
-                reason = "Not confirmed: last start time did not change (before == after)."
-        except Exception:
-            # If parsing fails, still apply your rule strictly as string comparison
-            if before_ts != after_ts:
-                autosys_ran_confirmed = True
-                reason = "Confirmed: before != after (string compare). Autosys job ran."
-            else:
-                reason = "Not confirmed: before == after (string compare)."
+                started_confirmed = False
+                reason = "Last Start did not increase (job may not have started yet OR timestamp didn’t change)"
+        except Exception as e:
+            started_confirmed = False
+            reason = f"Could not parse before/after timestamps: {e}"
     else:
-        reason = "Missing before/after lastStart values in evidence file. Check Autosys profile + autorep output."
+        reason = "Missing before/after lastStart values in evidence. Check autorep output format and jobName extraction."
 
     return {
         "ok": True,
         "inboundKey": inbound_key,
-        "mappedAutosysCommand": autosys_command,
-        "autosysJobNameExtracted": job_name,
-        "autosysRanConfirmed": autosys_ran_confirmed,
-        "autosysRunReason": reason,
+        "filename": filename,
+        "matchedAutosysCommand": autosys_cmd,
+        "extractedJobName": job_name,
+        "autosysStartedConfirmed": started_confirmed,
+        "autosysStartReason": reason,
         "autosysLastStartBefore": before_ts or None,
         "autosysLastStartAfter": after_ts or None,
-        "commandRc": evidence.get("commandRc"),
+        "sendeventRc": evidence.get("sendeventRc"),
         "evidenceLocation": {
             "localFileOnInstance": local_file,
-            "s3Bucket": bucket,
+            "s3Bucket": evidence_bucket,
             "s3Key": s3_key,
         },
         "ssm": {
@@ -302,20 +324,3 @@ aws s3 cp "{local_file}" "s3://{bucket}/{s3_key}"
             "responseCode": inv.get("ResponseCode"),
         },
     }
-
-
-
-
-{
-  "^SAM_HANGINGUPB_Start_.*\\.complete$": "sendevent -E FORCE_START_JOB -j GV7#SAM#box#HANGING_UPB_ADHOC_PROD",
-
-  "^SAM_FICC_Start_.*\\.complete$": "sendevent -E FORCE_START_JOB -j GV7#SAM#box#FICC_GENCOST_ADHOC_PROD",
-
-  "^SAM_GL_Extract_.*\\.complete$": "sendevent -E FORCE_START_JOB -j GV7#SAM#box#GLT_SEC_GL_ADHOC_PROD",
-
-  "^SAM_GL_Publish_.*\\.complete$": "sendevent -E JOB_OFF_HOLD -j GV7#SAM#cmd#GLT_SEC_GL_START_ADHOC_PROD",
-
-  "^SAM_GLCLOSE_SCD_.*\\.complete$": "sendevent -E FORCE_START_JOB -j GV7#SAM#box#SAM_GLCLOSE_SCD_ADHOC_PROD",
-
-  "^SAM_EYTAXBUS_VEND_.*\\.complete$": "sendevent -E FORCE_START_JOB -j GV7#SAM#box#EY_TAXBUS_VEND_ADHOC_PROD"
-}
