@@ -1,7 +1,6 @@
 import os
 import json
 import time
-import re
 import base64
 from datetime import datetime
 
@@ -14,46 +13,41 @@ s3 = boto3.client("s3")
 TERMINAL_STATUSES = {"Success", "Failed", "TimedOut", "Cancelled", "Cancelling"}
 
 
-def sanitize(s: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9_.-]", "_", s or "")
-
-
-def wait_for_command(command_id, instance_id, timeout=900, poll=3):
-    end = time.time() + timeout
-    while time.time() < end:
-        try:
-            inv = ssm.get_command_invocation(
-                CommandId=command_id,
-                InstanceId=instance_id
-            )
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "InvocationDoesNotExist":
-                time.sleep(poll)
-                continue
-            raise
-
-        if inv["Status"] in TERMINAL_STATUSES:
+def wait_for_command(command_id, instance_id, timeout_seconds=900, poll_seconds=3):
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        inv = ssm.get_command_invocation(
+            CommandId=command_id,
+            InstanceId=instance_id
+        )
+        if inv.get("Status") in TERMINAL_STATUSES:
             return inv
-        time.sleep(poll)
-
+        time.sleep(poll_seconds)
     raise TimeoutError("SSM command timed out")
 
 
-def s3_get_json_with_retry(bucket, key, timeout=240, poll=3):
-    end = time.time() + timeout
-    last = None
-    while time.time() < end:
+def s3_get_json(bucket, key, timeout_seconds=240, poll_seconds=3):
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
         try:
             obj = s3.get_object(Bucket=bucket, Key=key)
             return json.loads(obj["Body"].read().decode())
-        except Exception as e:
-            last = e
-            time.sleep(poll)
-    raise TimeoutError(f"S3 evidence not found: {last}")
+        except s3.exceptions.NoSuchKey:
+            time.sleep(poll_seconds)
+    raise TimeoutError("Evidence JSON not found")
 
 
-def parse_mmddyyyy_hhmmss(s):
-    return datetime.strptime(s.strip(), "%m/%d/%Y %H:%M:%S")
+def extract_job_name(full_cmd: str) -> str:
+    """
+    Extract job name after -J safely in Python
+    Example:
+      sendevent -E FORCE_STARTJOB -J GV7#SA#cmd#CAL_SERVICES_UPDATE_STAGE_DEVL1
+    """
+    tokens = full_cmd.split()
+    for i, tok in enumerate(tokens):
+        if tok == "-J" and i + 1 < len(tokens):
+            return tokens[i + 1]
+    raise ValueError("Could not extract job name (-J <job>)")
 
 
 def lambda_handler(event, context):
@@ -71,96 +65,82 @@ def lambda_handler(event, context):
         or "sendevent -E FORCE_STARTJOB -J GV7#SA#cmd#CAL_SERVICES_UPDATE_STAGE_DEVL1"
     )
 
+    job_name = extract_job_name(full_cmd)
+
     run_id = str(int(time.time()))
-    job_safe = sanitize(full_cmd)
     local_file = f"/tmp/autosys_evidence_{run_id}.json"
-    s3_key = f"{prefix}/{job_safe}/{run_id}.json"
+    s3_key = f"{prefix}/{job_name}/{run_id}.json"
 
+    print("FULL CMD:", full_cmd)
+    print("JOB NAME:", job_name)
+    print("S3 KEY:", s3_key)
+
+    # Encode values safely
     cmd_b64 = base64.b64encode(full_cmd.encode()).decode()
+    job_b64 = base64.b64encode(job_name.encode()).decode()
 
-    print("CONFIG:")
-    print("bucket:", bucket)
-    print("s3_key:", s3_key)
-    print("full_cmd:", full_cmd)
-
-    remote_script = r"""#!/bin/bash
+    remote_script = f"""#!/bin/bash
 set -euo pipefail
 
 echo "===== EC2 DEBUG START ====="
 date -u
 whoami
 hostname
-pwd
-echo "PATH=$PATH"
+echo "=========================="
 
-CMD_B64="__CMD_B64__"
-LOCAL_FILE="__LOCAL_FILE__"
-BUCKET="__BUCKET__"
-S3_KEY="__S3_KEY__"
-
-CMD="$(echo "$CMD_B64" | base64 --decode)"
+CMD="$(echo '{cmd_b64}' | base64 --decode)"
+JOB="$(echo '{job_b64}' | base64 --decode)"
 
 echo "FULL CMD:"
 echo "$CMD"
+echo "JOB:"
+echo "$JOB"
 
-# Load Autosys profile
 PROFILE="/export/appl/gv7/gv7dev1/src/DEVL1/GV7-util_scripts/gv7_pysrc/config/infa_autosys_profile.ksh"
 if [ -f "$PROFILE" ]; then
   source "$PROFILE"
 fi
 
-which sendevent || true
-which autorep || true
+echo "which sendevent: $(command -v sendevent)"
+echo "which autorep: $(command -v autorep)"
 
-# ===== SAFE JOB EXTRACTION (NO awk/sed) =====
-JOB="${CMD#*-J }"
-JOB="${JOB%% *}"
-
-echo "Extracted JOB=[$JOB]"
-
-if [ -z "$JOB" ]; then
-  echo "ERROR: Failed to extract job name"
-  exit 2
-fi
-
-CMD_SAFE="sendevent -E FORCE_STARTJOB -J \"$JOB\""
-echo "CMD_SAFE=$CMD_SAFE"
-
-extract_last_start() {
-  autorep -j "$JOB" 2>&1 | grep "$JOB" | head -n 1 | \
-    grep -Eo '[0-9]{2}/[0-9]{2}/[0-9]{4}[[:space:]]+[0-9]{2}:[0-9]{2}:[0-9]{2}' || true
-}
+extract_last_start() {{
+  autorep -j "$JOB" 2>/dev/null | grep "$JOB" | head -n 1 | grep -Eo '[0-9]{{2}}/[0-9]{{2}}/[0-9]{{4}}[[:space:]]+[0-9]{{2}}:[0-9]{{2}}:[0-9]{{2}}' || true
+}}
 
 BEFORE_TS="$(extract_last_start)"
+echo "BEFORE_TS=$BEFORE_TS"
+
+CMD_SAFE="sendevent -E FORCE_STARTJOB -J \\"$JOB\\""
+echo "CMD_SAFE=$CMD_SAFE"
+
+set +e
 bash -lc "$CMD_SAFE"
 RC=$?
+set -e
+
 sleep 3
+
 AFTER_TS="$(extract_last_start)"
+echo "AFTER_TS=$AFTER_TS"
 
-NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+NOW_ISO="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
-cat > "$LOCAL_FILE" <<EOF
-{
+cat > "{local_file}" <<EOF
+{{
   "job": "$JOB",
   "command": "$CMD_SAFE",
   "lastStartBefore": "$BEFORE_TS",
   "lastStartAfter": "$AFTER_TS",
   "rc": "$RC",
   "capturedAtUtc": "$NOW_ISO"
-}
+}}
 EOF
 
-aws s3 cp "$LOCAL_FILE" "s3://$BUCKET/$S3_KEY"
+aws s3 cp "{local_file}" "s3://{bucket}/{s3_key}"
+
 echo "===== EC2 DEBUG END ====="
 """
-
-    remote_script = (
-        remote_script
-        .replace("__CMD_B64__", cmd_b64)
-        .replace("__LOCAL_FILE__", local_file)
-        .replace("__BUCKET__", bucket)
-        .replace("__S3_KEY__", s3_key)
-    )
 
     resp = ssm.send_command(
         DocumentName=document_name,
@@ -174,27 +154,25 @@ echo "===== EC2 DEBUG END ====="
     command_id = resp["Command"]["CommandId"]
     inv = wait_for_command(command_id, instance_id)
 
-    evidence = s3_get_json_with_retry(bucket, s3_key)
-
-    before_ts = evidence.get("lastStartBefore", "")
-    after_ts = evidence.get("lastStartAfter", "")
+    evidence = s3_get_json(bucket, s3_key)
 
     started = False
-    reason = "unknown"
+    reason = "Insufficient data"
 
-    if before_ts and after_ts:
-        if parse_mmddyyyy_hhmmss(after_ts) > parse_mmddyyyy_hhmmss(before_ts):
+    if evidence.get("lastStartBefore") and evidence.get("lastStartAfter"):
+        if evidence["lastStartAfter"] > evidence["lastStartBefore"]:
             started = True
-            reason = "Last start increased"
+            reason = "Last start time increased"
 
     return {
         "ok": True,
-        "autosysStartedConfirmed": started,
+        "job": job_name,
+        "startedConfirmed": started,
         "reason": reason,
         "evidence": evidence,
         "ssm": {
             "commandId": command_id,
-            "status": inv["Status"],
-            "responseCode": inv["ResponseCode"]
+            "status": inv.get("Status"),
+            "responseCode": inv.get("ResponseCode")
         }
     }
