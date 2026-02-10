@@ -13,10 +13,6 @@ TERMINAL_STATUSES = {"Success", "Failed", "TimedOut", "Cancelled", "Cancelling"}
 
 
 def sanitize(s: str) -> str:
-    """
-    Safe-ish string for S3 folder names.
-    (No regex)
-    """
     if not s:
         return ""
     allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
@@ -44,30 +40,38 @@ def wait_for_command(command_id: str, instance_id: str, timeout_seconds: int = 9
 
 
 def s3_get_json_with_retry(bucket: str, key: str, timeout_seconds: int = 180, poll_seconds: int = 3):
+    """
+    Reads evidence JSON from S3 with retries.
+    IMPORTANT:
+      - Bucket MUST be a real bucket name (top-level).
+      - Key is the full prefix/path inside that bucket.
+    """
     deadline = time.time() + timeout_seconds
     last_err = None
 
     while time.time() < deadline:
         try:
+            print(f"[DEBUG] Attempting get_object bucket={bucket} key={key}")
             obj = s3.get_object(Bucket=bucket, Key=key)
             body = obj["Body"].read().decode("utf-8")
             return json.loads(body)
         except ClientError as e:
             last_err = e
             code = (e.response.get("Error") or {}).get("Code", "")
+            print(f"[DEBUG] get_object failed code={code} err={str(e)}")
             if code in ("NoSuchKey", "NoSuchBucket"):
                 time.sleep(poll_seconds)
                 continue
             raise
         except Exception as e:
             last_err = e
+            print(f"[DEBUG] get_object unknown error: {str(e)}")
             time.sleep(poll_seconds)
 
     raise TimeoutError(f"Evidence JSON not found in time s3://{bucket}/{key}. Last err: {last_err}")
 
 
 def parse_mmddyyyy_hhmmss(s: str):
-    # Example: 01/30/2026 02:41:11
     return datetime.strptime(s.strip(), "%m/%d/%Y %H:%M:%S")
 
 
@@ -86,17 +90,24 @@ def load_job_mapping(filename: str = "autosys_job_mapping.json") -> dict:
 
 def extract_s3_key_from_event(event: dict) -> str:
     """
-    Supports EventBridge/CloudTrail style events.
-    Prefer: detail.requestParameters.key
-    Fallback: resources[].arn for s3 object.
+    Supports EventBridge/CloudTrail style events:
+      - detail.requestParameters.key
+      - detail.object.key (some event shapes)
+      - resources[].arn (arn:aws:s3:::bucket/key)
     """
     detail = event.get("detail") or {}
+
     req = detail.get("requestParameters") or {}
     key = req.get("key")
-
     if isinstance(key, str) and key.strip():
         print("[DEBUG] S3 key from detail.requestParameters.key:", key)
         return key
+
+    obj = detail.get("object") or {}
+    key2 = obj.get("key")
+    if isinstance(key2, str) and key2.strip():
+        print("[DEBUG] S3 key from detail.object.key:", key2)
+        return key2
 
     resources = event.get("resources") or []
     for r in resources:
@@ -105,22 +116,71 @@ def extract_s3_key_from_event(event: dict) -> str:
             after_prefix = arn.split("arn:aws:s3:::", 1)[1]
             parts = after_prefix.split("/", 1)
             if len(parts) == 2:
-                key2 = parts[1]
-                print("[DEBUG] S3 key from resources ARN:", key2)
-                return key2
+                key3 = parts[1]
+                print("[DEBUG] S3 key from resources ARN:", key3)
+                return key3
 
     print("[DEBUG] Could not find s3 key in event")
     return ""
 
 
+def extract_bucket_from_event(event: dict) -> str:
+    """
+    Try to derive the S3 bucket name from common EventBridge/CloudTrail shapes.
+    This avoids hardcoding and prevents NoSuchBucket.
+    """
+    detail = event.get("detail") or {}
+
+    # CloudTrail style: detail.requestParameters.bucketName
+    req = detail.get("requestParameters") or {}
+    b1 = req.get("bucketName")
+    if isinstance(b1, str) and b1.strip():
+        print("[DEBUG] Bucket from detail.requestParameters.bucketName:", b1)
+        return b1
+
+    # Some shapes: detail.bucket.name
+    bucket_obj = detail.get("bucket") or {}
+    b2 = bucket_obj.get("name")
+    if isinstance(b2, str) and b2.strip():
+        print("[DEBUG] Bucket from detail.bucket.name:", b2)
+        return b2
+
+    # Some shapes: detail.s3.bucket.name
+    s3_obj = detail.get("s3") or {}
+    b3 = ((s3_obj.get("bucket") or {}).get("name"))
+    if isinstance(b3, str) and b3.strip():
+        print("[DEBUG] Bucket from detail.s3.bucket.name:", b3)
+        return b3
+
+    # resources arn: arn:aws:s3:::bucket/key
+    resources = event.get("resources") or []
+    for r in resources:
+        arn = r.get("ARN") or r.get("arn")
+        if isinstance(arn, str) and arn.startswith("arn:aws:s3:::"):
+            after_prefix = arn.split("arn:aws:s3:::", 1)[1]
+            bucket = after_prefix.split("/", 1)[0]
+            if bucket:
+                print("[DEBUG] Bucket from resources ARN:", bucket)
+                return bucket
+
+    # Finally: event top-level bucket (if you pass it)
+    b4 = event.get("bucket")
+    if isinstance(b4, str) and b4.strip():
+        print("[DEBUG] Bucket from event.bucket:", b4)
+        return b4
+
+    print("[DEBUG] Could not extract bucket from event")
+    return ""
+
+
 def normalize_filename_to_mapping_key(filename: str) -> str:
     """
-    Example filename:
-      SAM_HANGINGUPB_Start_20260203.complete  -> SAM_HANGINGUPB_Start
+    Example:
+      SAM_HANGINGUPB_Start_20260203.complete -> SAM_HANGINGUPB_Start
 
     Rules (NO regex):
-      - remove ".complete" suffix
-      - remove trailing "_<digits>" (timestamp)
+      - remove ".complete"
+      - remove trailing "_<digits>"
     """
     print("[DEBUG] normalize input filename:", filename)
 
@@ -128,12 +188,10 @@ def normalize_filename_to_mapping_key(filename: str) -> str:
     if name.endswith(".complete"):
         name = name[: -len(".complete")]
 
-    # remove trailing digits
     i = len(name) - 1
     while i >= 0 and name[i].isdigit():
         i -= 1
 
-    # if we stopped at an underscore before digits, remove that underscore too
     if i >= 0 and name[i] == "_" and i < len(name) - 1:
         name = name[:i]
     else:
@@ -145,10 +203,8 @@ def normalize_filename_to_mapping_key(filename: str) -> str:
 
 def extract_env_from_s3_key(s3_key: str) -> str:
     """
-    Extract env segment like DEVL1 from the S3 path.
-    Your example:
-      inbox/.../OUT/DEVL1/SCD/....complete  -> DEVL1
-    NO regex: scan segments.
+    Extract env segment like DEVL1 from S3 key:
+      .../OUT/DEVL1/SCD/... -> DEVL1
     """
     if not s3_key:
         return ""
@@ -174,9 +230,7 @@ def extract_env_from_s3_key(s3_key: str) -> str:
 
 def apply_logenv_replacement(job_name: str, command: str, env_from_path: str):
     """
-    Replace LOGENV placeholder inside JSON values with the env extracted from S3.
-    Example:
-      GV7#..._LOGENV  -> GV7#..._DEVL1
+    Replace LOGENV placeholder in JSON values with env_from_path.
     """
     if not env_from_path:
         print("[DEBUG] env_from_path empty -> cannot replace LOGENV")
@@ -194,34 +248,62 @@ def apply_logenv_replacement(job_name: str, command: str, env_from_path: str):
     print("[DEBUG] LOGENV replacement changed:", changed)
     print("[DEBUG] job_name AFTER:", job_name)
     print("[DEBUG] command AFTER :", command)
-
     return job_name, command, changed
 
 
 def lambda_handler(event, context):
     print("RAW EVENT:", json.dumps(event, indent=2))
 
-    # ---- CONFIG ----
-    bucket = "fundacntg-dev1-ftbu-us-east-1"
-    prefix = "prepare/cin/dflt/ADHOC_BUS_REQ/test_ybyo/"
-    instance_id = "i-090e6f0a08fa26397"
-    run_as_user = "gauhlk"
+    # ---------------- CONFIG ----------------
+    # Evidence bucket:
+    # - If EVIDENCE_BUCKET env var is set, it will use it.
+    # - Else it will try to extract from event.
+    # - Else it will fail early with a clear error (no more NoSuchBucket surprise).
+    EVIDENCE_BUCKET = os.environ.get("EVIDENCE_BUCKET", "").strip()
+
+    # Where to upload evidence inside the evidence bucket:
+    EVIDENCE_PREFIX = os.environ.get("EVIDENCE_PREFIX", "prepare/cin/dflt/ADHOC_BUS_REQ/test_ybyo/").strip()
+
+    instance_id = os.environ.get("AUTOSYS_INSTANCE_ID", "i-090e6f0a08fa26397")
+    run_as_user = os.environ.get("AUTOSYS_RUN_AS_USER", "gauhlk")
 
     detail = event.get("detail") or {}
-    document_name = event.get("documentName") or detail.get("documentName") or "fundacntg-shellssmdoc-stepfunc"
+    document_name = event.get("documentName") or detail.get("documentName") or os.environ.get(
+        "SSM_DOCUMENT_NAME", "fundacntg-shellssmdoc-stepfunc"
+    )
+
     print("[DEBUG] document_name:", document_name)
+    print("[DEBUG] instance_id:", instance_id)
+    print("[DEBUG] run_as_user:", run_as_user)
+    print("[DEBUG] EVIDENCE_PREFIX:", EVIDENCE_PREFIX)
+    print("[DEBUG] EVIDENCE_BUCKET env:", EVIDENCE_BUCKET)
 
     mapping = load_job_mapping("autosys_job_mapping.json")
 
+    # Trigger event key (the .complete object key)
     s3_key_in_event = extract_s3_key_from_event(event)
     print("[DEBUG] s3_key_in_event:", s3_key_in_event)
-
     if not s3_key_in_event:
-        return {"ok": False, "error": "Could not extract s3 object key from event", "eventKeys": list(event.keys())}
+        return {"ok": False, "error": "Could not extract S3 object key from event", "eventKeys": list(event.keys())}
 
+    # Extract env like DEVL1 from the object key path
     env_from_path = extract_env_from_s3_key(s3_key_in_event)
     print("[DEBUG] env_from_path:", env_from_path)
 
+    # Determine evidence bucket
+    if not EVIDENCE_BUCKET:
+        EVIDENCE_BUCKET = extract_bucket_from_event(event)
+
+    if not EVIDENCE_BUCKET:
+        return {
+            "ok": False,
+            "error": "Could not determine evidence bucket. Set env var EVIDENCE_BUCKET to a real bucket name.",
+            "hint": "Bucket must be a top-level bucket name, NOT a folder/prefix path.",
+        }
+
+    print("[DEBUG] Using evidence bucket:", EVIDENCE_BUCKET)
+
+    # filename -> mapping key
     filename = s3_key_in_event.split("/")[-1]
     print("[DEBUG] filename:", filename)
 
@@ -250,38 +332,51 @@ def lambda_handler(event, context):
     print("[DEBUG] job_from_json BEFORE:", job_from_json)
     print("[DEBUG] cmd_from_json BEFORE:", cmd_from_json)
 
-    # ✅ Replace LOGENV using env from S3 path
+    # Replace LOGENV with env extracted from S3 path
     job_from_json, cmd_from_json, logenv_replaced = apply_logenv_replacement(job_from_json, cmd_from_json, env_from_path)
-
     if not logenv_replaced:
-        print("[WARN] LOGENV was not replaced. Either env was missing or JSON values do not contain LOGENV.")
+        print("[WARN] LOGENV was not replaced (either env missing in path or JSON doesn't contain LOGENV).")
 
-    # Evidence file naming
+    # Evidence naming
     job_safe = sanitize(job_from_json)
     run_id = str(int(time.time()))
     local_file = f"/tmp/autosys_evidence_{job_safe}_{run_id}.json"
-    evidence_s3_key = f"{prefix.rstrip('/')}/{job_safe}/{run_id}.json"
+    evidence_s3_key = f"{EVIDENCE_PREFIX.rstrip('/')}/{job_safe}/{run_id}.json"
 
     print("[DEBUG] job_safe:", job_safe)
+    print("[DEBUG] run_id:", run_id)
     print("[DEBUG] local_file:", local_file)
-    print("[DEBUG] evidence_s3_key:", evidence_s3_key)
+    print("[DEBUG] evidence location:")
+    print("        bucket =", EVIDENCE_BUCKET)
+    print("        key    =", evidence_s3_key)
 
-    # Use env_from_path also in profile path (so we don't hardcode DEVL1 here)
-    # NOTE: If your profile path is not env-specific, you can keep it fixed.
-    profile_path = f"/export/app1/gv7/gv7dev1/src/{env_from_path}/GV7-util_scripts/gv7_pysrc/config/infa_autosys_profile.ksh"
+    # IMPORTANT: profile path from env (no hardcoding DEVL1)
+    profile_path = ""
+    if env_from_path:
+        profile_path = f"/export/app1/gv7/gv7dev1/src/{env_from_path}/GV7-util_scripts/gv7_pysrc/config/infa_autosys_profile.ksh"
     print("[DEBUG] profile_path:", profile_path)
 
+    # Remote script executed on the EC2 via SSM
     remote_script = f"""
 set -e
 JOB="{job_from_json}"
 
-# Load Autosys profile if present (env-aware)
-if [ -f "{profile_path}" ]; then
+echo "[REMOTE] JOB=$JOB"
+echo "[REMOTE] ENV_FROM_PATH={env_from_path}"
+echo "[REMOTE] EVIDENCE_FILE={local_file}"
+echo "[REMOTE] EVIDENCE_S3=s3://{EVIDENCE_BUCKET}/{evidence_s3_key}"
+
+# Load Autosys profile if present
+if [ -n "{profile_path}" ] && [ -f "{profile_path}" ]; then
+  echo "[REMOTE] Sourcing profile {profile_path}"
   source "{profile_path}"
+else
+  echo "[REMOTE] Profile not found or not set, continuing"
 fi
 
 extract_last_start() {{
   LINE=$(autorep -j "$JOB" | grep "$JOB" | head -n 1 || true)
+  echo "[REMOTE] autorep line: $LINE"
   if [ -z "$LINE" ]; then
     echo ""
     return 0
@@ -298,15 +393,23 @@ extract_last_start() {{
 }}
 
 BEFORE_TS=$(extract_last_start)
+echo "[REMOTE] BEFORE_TS=$BEFORE_TS"
 
-# ---- Run the mapped command (may contain #, keep as-is) ----
+echo "[REMOTE] Running command:"
+echo "{cmd_from_json}"
+
+# Run the mapped command (may contain #)
 {cmd_from_json}
 RC=$?
+echo "[REMOTE] sendevent RC=$RC"
 
 sleep 3
+
 AFTER_TS=$(extract_last_start)
+echo "[REMOTE] AFTER_TS=$AFTER_TS"
 
 NOW_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+echo "[REMOTE] NOW_ISO=$NOW_ISO"
 
 cat > "{local_file}" << EOF
 {{
@@ -321,21 +424,27 @@ cat > "{local_file}" << EOF
 }}
 EOF
 
-aws s3 cp "{local_file}" "s3://{bucket}/{evidence_s3_key}"
+echo "[REMOTE] Evidence file written. Contents:"
+cat "{local_file}" || true
+
+echo "[REMOTE] Uploading evidence to S3..."
+aws s3 cp "{local_file}" "s3://{EVIDENCE_BUCKET}/{evidence_s3_key}"
+echo "[REMOTE] Upload done."
 """.strip()
 
     print("[DEBUG] remote_script (first 2000 chars):")
     print(remote_script[:2000])
 
-    resp = ssm.send_command(
-        DocumentName=document_name,
-        InstanceIds=[instance_id],
-        Parameters={
-            "command": [remote_script],
-            "runAsUser": [run_as_user],
-        },
-        Comment="Autosys trigger + evidence saved locally and uploaded to S3",
-    )
+    # Send to SSM
+    try:
+        resp = ssm.send_command(
+            DocumentName=document_name,
+            InstanceIds=[instance_id],
+            Parameters={"command": [remote_script], "runAsUser": [run_as_user]},
+            Comment="Autosys trigger + evidence saved locally and uploaded to S3",
+        )
+    except Exception as e:
+        return {"ok": False, "error": f"Failed to send SSM command: {str(e)}"}
 
     command_id = resp["Command"]["CommandId"]
     print("[DEBUG] SSM CommandId:", command_id)
@@ -343,7 +452,12 @@ aws s3 cp "{local_file}" "s3://{bucket}/{evidence_s3_key}"
     inv = wait_for_command(command_id, instance_id, timeout_seconds=900, poll_seconds=3)
     print("[DEBUG] SSM Status:", inv.get("Status"), "ResponseCode:", inv.get("ResponseCode"))
 
-    evidence = s3_get_json_with_retry(bucket, evidence_s3_key, timeout_seconds=180, poll_seconds=3)
+    # If SSM failed, we still try to fetch evidence (maybe it uploaded before failing)
+    print("[DEBUG] Will read evidence from:")
+    print("        bucket =", EVIDENCE_BUCKET)
+    print("        key    =", evidence_s3_key)
+
+    evidence = s3_get_json_with_retry(EVIDENCE_BUCKET, evidence_s3_key, timeout_seconds=180, poll_seconds=3)
     print("[DEBUG] evidence:", json.dumps(evidence, indent=2))
 
     before_ts = (evidence.get("lastStartBefore") or "").strip()
@@ -382,7 +496,7 @@ aws s3 cp "{local_file}" "s3://{bucket}/{evidence_s3_key}"
         "sendeventRc": evidence.get("sendeventRc"),
         "evidenceLocation": {
             "localFileOnInstance": local_file,
-            "s3Bucket": bucket,
+            "s3Bucket": EVIDENCE_BUCKET,
             "s3Key": evidence_s3_key,
         },
         "ssm": {
