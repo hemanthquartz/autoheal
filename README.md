@@ -43,6 +43,7 @@ def wait_for_command(command_id: str, instance_id: str, timeout_seconds: int = 9
 def s3_get_json_with_retry(bucket: str, key: str, timeout_seconds: int = 120, poll_seconds: int = 3):
     deadline = time.time() + timeout_seconds
     last_err = None
+
     while time.time() < deadline:
         try:
             obj = s3.get_object(Bucket=bucket, Key=key)
@@ -108,12 +109,12 @@ def extract_s3_key_from_event(event: dict) -> str:
 def normalize_filename_to_mapping_key(filename: str) -> str:
     """
     Example filename:
-    SAM_HANGINGPUB_Start_20260203.complete  -> SAM_HANGINGPUB_Start
-    SAM_FICC_Start_20260203.complete        -> SAM_FICC_Start
+      SAM_HANGINGPUB_Start_20260203.complete -> SAM_HANGINGPUB_Start
+      SAM_FICC_Start_20260203.complete       -> SAM_FICC_Start
 
     Rules:
-    - remove .complete suffix
-    - remove trailing _digits (timestamp)
+      - remove .complete suffix
+      - remove trailing _digits (timestamp)
     """
     print("[DEBUG] normalize input filename:", filename)
 
@@ -121,7 +122,6 @@ def normalize_filename_to_mapping_key(filename: str) -> str:
     if name.endswith(".complete"):
         name = name[:-len(".complete")]
 
-    # remove trailing _digits (timestamp)
     name = re.sub(r"_[0-9]+$", "", name)
 
     print("[DEBUG] normalized mapping key:", name)
@@ -129,21 +129,12 @@ def normalize_filename_to_mapping_key(filename: str) -> str:
 
 
 def extract_job_from_command(cmd: str) -> str:
-    m = re.search(r"(?:\s|^)-(?:j|J)\s+([^\s]+)", cmd.strip() if cmd else "")
+    m = re.search(r"(?:^|\s)-(?:j|J)\s+([^\s]+)", cmd.strip() if cmd else "")
     return m.group(1) if m else ""
 
 
 def lambda_handler(event, context):
     print("RAW EVENT:", json.dumps(event, indent=2))
-
-    # ---- CONFIG ----
-    bucket = "fundacntg-dev1-ftbu-us-east-1"
-    prefix = "prepare/cin/dflt/ADHOC_BUS_REQ/test_ybyo/"
-    instance_id = "i-090e6f0a8fa26397"
-    run_as_user = "gauhlk"
-
-    detail = event.get("detail") or {}
-    document_name = event.get("documentName") or detail.get("documentName") or "fundacntg-shellssmdoc-stepfunc"
 
     mapping = load_job_mapping("autosys_job_mapping.json")
 
@@ -153,7 +144,7 @@ def lambda_handler(event, context):
     if not s3_key_in_event:
         return {
             "ok": False,
-            "error": "Could not extract S3 object key from event",
+            "error": "Could not extract s3 object key from event",
             "eventKeys": list(event.keys())
         }
 
@@ -185,14 +176,20 @@ def lambda_handler(event, context):
     print("[DEBUG] job_from_json:", job_from_json)
     print("[DEBUG] cmd_from_json:", cmd_from_json)
 
-    job_safe = sanitize(job_from_json)
+    bucket = "fundacntg-dev1-ftbu-us-east-1"
+    prefix = "prepare/cin/dflt/ADHOC_BUS_REQ/test_ybyo/"
+    instance_id = "i-090e6f0a8fa26397"
+    run_as_user = "gauhlk"
+    document_name = event.get("documentName") or event.get("detail", {}).get("documentName") or "fundacntg-shellssmdoc-stepfunc"
+
+    job_safe = "sanitize(job_name)"
     run_id = str(int(time.time()))
+
     local_file = f"/tmp/autosys_evidence_{job_safe}_{run_id}.json"
     s3_key = f"{prefix.rstrip('/')}/{job_safe}/{run_id}.json"
 
     remote_script = f"""
 set -e
-
 JOB="{job_from_json}"
 
 if [ -f /export/appl/gv7/gv7dev1/src/DEVL1/GV7-util_scripts/gv7_pysrc/config/infa_autosys_profile.ksh ]; then
@@ -201,7 +198,7 @@ fi
 
 extract_last_start() {{
   LINE=$(autorep -J "$JOB" | grep "$JOB" | head -n 1 || true)
-  echo "$LINE" | grep -Eo '[0-9]{{2}}/[0-9]{{2}}/[0-9]{{4}}[[:space:]][0-9]{{2}}:[0-9]{{2}}:[0-9]{{2}}' | head -n 1 || true
+  echo "$LINE" | grep -Eo '[0-9]{{2}}/[0-9]{{2}}/[0-9]{{4}}[[:space:]]+[0-9]{{2}}:[0-9]{{2}}:[0-9]{{2}}' | head -n 1 || true
 }}
 
 BEFORE_TS=$(extract_last_start)
@@ -210,6 +207,7 @@ BEFORE_TS=$(extract_last_start)
 RC=$?
 
 sleep 3
+
 AFTER_TS=$(extract_last_start)
 
 NOW_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
