@@ -1,6 +1,7 @@
 {
   "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
   "contentVersion": "1.0.0.0",
+
   "triggers": {
     "When_a_HTTP_request_is_received": {
       "type": "Request",
@@ -13,28 +14,27 @@
             "title": { "type": "string" },
             "details": { "type": "string" },
             "request_id": { "type": "string" },
-            "requested_by": { "type": "string" },
-            "approver_email": { "type": "string" }
+            "requested_by": { "type": "string" }
           }
         }
       }
     }
   },
+
   "actions": {
-    "Post_adaptive_card_and_wait": {
+
+    "Post_dm_card_and_wait": {
       "type": "ApiConnectionWebhook",
       "inputs": {
         "host": {
           "connection": {
-            "name": "@parameters('$connections')['teams']['connectionId']"
+            "name": "/subscriptions/5204df69-30ab-4345-a9d2-ddb0ac139a3c/resourceGroups/pde-automation-hub-eastus-np-rg/providers/Microsoft.Web/connections/teams"
           }
         },
         "body": {
-          "message": {
-            "body": {
-              "contentType": "html",
-              "content": "<attachment id=\"card1\"></attachment>"
-            }
+          "body": {
+            "content": "<attachment id=\"card1\"></attachment>",
+            "contentType": "html"
           },
           "attachments": [
             {
@@ -59,8 +59,7 @@
                   {
                     "type": "TextBlock",
                     "text": "Requested by: @{triggerBody()?['requested_by']}",
-                    "isSubtle": true,
-                    "wrap": true
+                    "isSubtle": true
                   }
                 ],
                 "actions": [
@@ -85,17 +84,17 @@
             }
           ]
         },
-        "path": "/v1.0/teams/@{encodeURIComponent(parameters('teamId'))}/channels/@{encodeURIComponent(parameters('channelId'))}/messages"
+        "path": "/v1.0/teams/3cf5a8b2-aab5-4a45-ba98-f2a3781f8acf/channels/19:7a3494c32a7f4a5cba9c64964a24579f@thread.tacv2/messages"
       }
     },
 
     "Parse_Teams_response": {
       "type": "ParseJson",
       "runAfter": {
-        "Post_adaptive_card_and_wait": ["Succeeded"]
+        "Post_dm_card_and_wait": ["Succeeded"]
       },
       "inputs": {
-        "content": "@body('Post_adaptive_card_and_wait')",
+        "content": "@body('Post_dm_card_and_wait')",
         "schema": {
           "type": "object",
           "properties": {
@@ -130,14 +129,14 @@
       }
     },
 
-    "POST_callback_to_backend": {
+    "POST_callback_to_Mycelium": {
       "type": "Http",
       "runAfter": {
         "Determine_approval": ["Succeeded"]
       },
       "inputs": {
         "method": "POST",
-        "uri": "https://your-backend/api/approval",
+        "uri": "https://pde-automation-hub-backend-eastus-np-pr-120.azurewebsites.net/api/v1/workflow/approval-callback",
         "headers": {
           "Content-Type": "application/json"
         },
@@ -154,28 +153,15 @@
     "Response": {
       "type": "Response",
       "runAfter": {
-        "POST_callback_to_backend": ["Succeeded"]
+        "POST_callback_to_Mycelium": ["Succeeded"]
       },
       "inputs": {
         "statusCode": 200,
         "body": {
-          "status": "Approval processed"
+          "status": "accepted"
         }
       }
     }
-  },
 
-  "parameters": {
-    "teamId": {
-      "type": "string",
-      "defaultValue": "<TEAM_ID>"
-    },
-    "channelId": {
-      "type": "string",
-      "defaultValue": "<CHANNEL_ID>"
-    },
-    "$connections": {
-      "type": "Object"
-    }
   }
 }
