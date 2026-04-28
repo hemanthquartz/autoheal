@@ -17,14 +17,14 @@
               "adaptive_card": {
                 "type": "object"
               },
+              "channel_adaptive_card": {
+                "type": "object"
+              },
               "approver_email": {
                 "type": "string"
               },
               "callback_url": {
                 "type": "string"
-              },
-              "channel_adaptive_card": {
-                "type": "object"
               },
               "details": {
                 "type": "string"
@@ -50,32 +50,6 @@
       }
     },
     "actions": {
-      "Post_channel_card": {
-        "type": "ApiConnection",
-        "inputs": {
-          "host": {
-            "connection": {
-              "name": "@parameters('$connections')['teams']['connectionId']"
-            }
-          },
-          "method": "post",
-          "body": {
-            "body": {
-              "content": "<attachment id=\"card1\"></attachment>",
-              "contentType": "html"
-            },
-            "attachments": [
-              {
-                "content": "@json(string(coalesce(triggerBody()?['channel_adaptive_card'], triggerBody()?['adaptive_card'])))",
-                "contentType": "application/vnd.microsoft.card.adaptive",
-                "id": "card1"
-              }
-            ]
-          },
-          "path": "/v3/beta/teams/@{encodeURIComponent('3cf5a8b2-aab5-4a45-ba98-f2a3781f8acf')}/channels/@{encodeURIComponent('19:7a3494c32a7f4a5cba9c64964a24579f@thread.tacv2')}/messages"
-        },
-        "runAfter": {}
-      },
       "Post_dm_card_and_wait": {
         "type": "ApiConnectionWebhook",
         "inputs": {
@@ -92,6 +66,8 @@
             },
             "attachments": [
               {
+                "id": "card1",
+                "contentType": "application/vnd.microsoft.card.adaptive",
                 "content": {
                   "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
                   "type": "AdaptiveCard",
@@ -106,12 +82,18 @@
                     },
                     {
                       "type": "TextBlock",
-                      "text": "@{coalesce(triggerBody()?['details'], 'Please review and respond.')}",
+                      "text": "@{coalesce(triggerBody()?['details'], 'Please review this approval request.')}",
                       "wrap": true
                     },
                     {
                       "type": "TextBlock",
-                      "text": "Requested by: @{coalesce(triggerBody()?['requested_by'], 'unknown')}",
+                      "text": "Requested by: @{coalesce(triggerBody()?['requested_by'], 'Unknown')}",
+                      "isSubtle": true,
+                      "wrap": true
+                    },
+                    {
+                      "type": "TextBlock",
+                      "text": "Request ID: @{coalesce(triggerBody()?['request_id'], 'N/A')}",
                       "isSubtle": true,
                       "wrap": true
                     }
@@ -136,19 +118,13 @@
                       }
                     }
                   ]
-                },
-                "contentType": "application/vnd.microsoft.card.adaptive",
-                "id": "card1"
+                }
               }
             ]
           },
           "path": "/v3/beta/teams/@{encodeURIComponent('3cf5a8b2-aab5-4a45-ba98-f2a3781f8acf')}/channels/@{encodeURIComponent('19:7a3494c32a7f4a5cba9c64964a24579f@thread.tacv2')}/messages"
         },
-        "runAfter": {
-          "Post_channel_card": [
-            "Succeeded"
-          ]
-        }
+        "runAfter": {}
       },
       "Parse_Teams_response": {
         "type": "ParseJson",
@@ -198,8 +174,11 @@
         "type": "Compose",
         "inputs": {
           "approved": "@equals(body('Parse_Teams_response')?['data']?['action'], 'approve')",
-          "decided_by": "@{body('Parse_Teams_response')?['responder']?['userPrincipalName']} via Teams",
-          "outcome": "@if(equals(body('Parse_Teams_response')?['data']?['action'], 'approve'), 'Accepted', 'Rejected')"
+          "decided_by": "@{coalesce(body('Parse_Teams_response')?['responder']?['userPrincipalName'], body('Parse_Teams_response')?['responder']?['displayName'], 'unknown')} via Teams",
+          "outcome": "@if(equals(body('Parse_Teams_response')?['data']?['action'], 'approve'), 'Accepted', 'Rejected')",
+          "request_id": "@coalesce(body('Parse_Teams_response')?['data']?['request_id'], triggerBody()?['request_id'])",
+          "run_id": "@coalesce(body('Parse_Teams_response')?['data']?['run_id'], triggerBody()?['message_id'])",
+          "source": "teams"
         },
         "runAfter": {
           "Parse_Teams_response": [
@@ -207,7 +186,7 @@
           ]
         }
       },
-      "POST_callback_to_Mycelium": {
+      "POST_callback_to_MyCelium": {
         "type": "Http",
         "inputs": {
           "uri": "@coalesce(triggerBody()?['callback_url'], 'https://pde-automation-hub-backend-eastus-np-pr-120.azurewebsites.net/api/v1/workflow/approval-callback')",
@@ -219,7 +198,8 @@
             "approved": "@outputs('Determine_approval')?['approved']",
             "decided_by": "@outputs('Determine_approval')?['decided_by']",
             "outcome": "@outputs('Determine_approval')?['outcome']",
-            "request_id": "@coalesce(body('Parse_Teams_response')?['data']?['request_id'], triggerBody()?['request_id'])",
+            "request_id": "@outputs('Determine_approval')?['request_id']",
+            "run_id": "@outputs('Determine_approval')?['run_id']",
             "source": "teams"
           }
         },
@@ -237,13 +217,13 @@
             "Content-Type": "application/json"
           },
           "body": {
-            "message_id": "@body('Post_channel_card')?['id']",
+            "status": "accepted",
             "request_id": "@triggerBody()?['request_id']",
-            "status": "accepted"
+            "approval_result": "@outputs('Determine_approval')"
           }
         },
         "runAfter": {
-          "POST_callback_to_Mycelium": [
+          "POST_callback_to_MyCelium": [
             "Succeeded"
           ]
         }
