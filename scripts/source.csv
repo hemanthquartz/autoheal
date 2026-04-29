@@ -1,0 +1,13 @@
+quote_id,prospect_id,first_name,middle_name,last_name,status,premium,phone,vehicle_count,state,quote_date
+Q-1001,P-9001,Alice,M,Johnson,quoted,850,(555) 111-2222,1,ca,2026-04-01
+Q-1002,P-9002,Bob,,Smith,bound,1250,555-333-4444,2,tx,2026-04-02
+Q-1003,P-9003,Charlie,R,Brown,declined,1750,+1 555 777 9999,3,ny,2026-04-03
+Q-1004,P-9004,Diana,L,Evans,quoted,940,555.888.1000,1,fl,2026-04-04
+Q-1005,P-9005,Ethan,,Walker,bound,1325,(555) 200-3000,2,wa,2026-04-05
+Q-1006,P-9006,Fiona,K,Hall,quoted,1180,555-111-9900,2,or,2026-04-06
+Q-1007,P-9007,George,T,Young,declined,1605,555 444 1212,3,nj,2026-04-07
+Q-1008,P-9008,Hannah,,Allen,bound,2100,+1 (555) 901-1111,4,ga,2026-04-08
+Q-1009,P-9009,Ian,P,King,quoted,780,555-222-6767,1,az,2026-04-09
+Q-1010,P-9010,Jasmine,R,Scott,bound,1495,555-300-8899,2,nc,2026-04-10
+Q-1011,P-9011,Kevin,,Green,declined,980,555-010-0202,1,co,2026-04-11
+Q-1012,P-9012,Linda,S,Baker,quoted,1860,555-818-4545,3,il,2026-04-12

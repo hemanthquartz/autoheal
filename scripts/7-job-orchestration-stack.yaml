@@ -1,0 +1,547 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  EMR on EKS job orchestration stack (standalone): SQS ingestion, Lambda starter,
+  Step Functions DAG orchestrator, and DynamoDB job state tracking.
+
+Parameters:
+  ClusterName:
+    Type: String
+    Default: emr-eks-karpenter
+
+  DefaultVirtualClusterId:
+    Type: String
+    Description: Default EMR virtual cluster ID to use if a job does not provide one.
+
+  DefaultExecutionRoleArn:
+    Type: String
+    Description: Default EMR job execution role ARN to use if a job does not provide one.
+
+  DefaultReleaseLabel:
+    Type: String
+    Default: emr-7.5.0-latest
+
+  StateTableName:
+    Type: String
+    Default: ""
+    Description: Optional DynamoDB table name override.
+
+Resources:
+  OrchestrationDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AWS::StackName}-dlq"
+      MessageRetentionPeriod: 1209600
+
+  OrchestrationQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AWS::StackName}-queue"
+      VisibilityTimeout: 120
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt OrchestrationDLQ.Arn
+        maxReceiveCount: 5
+
+  JobStateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !If
+        - UseCustomTableName
+        - !Ref StateTableName
+        - !Sub "${AWS::StackName}-job-state"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: WorkflowId
+          AttributeType: S
+        - AttributeName: JobName
+          AttributeType: S
+      KeySchema:
+        - AttributeName: WorkflowId
+          KeyType: HASH
+        - AttributeName: JobName
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ExpiresAt
+        Enabled: true
+
+  # Catalog table: stores job definitions -------- code location, pod config, Spark parameters.
+  # Each job in a workflow is looked up here at runtime; the SQS payload only needs names + dependencies.
+  JobCatalogTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-job-catalog"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: JobName
+          AttributeType: S
+      KeySchema:
+        - AttributeName: JobName
+          KeyType: HASH
+
+  OrchestrationLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-lambda-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: OrchestrationStateAndEMR
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                Resource: !GetAtt JobStateTable.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Scan
+                Resource: !GetAtt JobCatalogTable.Arn
+              - Effect: Allow
+                Action:
+                  - emr-containers:StartJobRun
+                  - emr-containers:DescribeJobRun
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:ChangeMessageVisibility
+                Resource: !GetAtt OrchestrationQueue.Arn
+
+  StepFunctionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-sfn-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeOrchestrationLambdas
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt RunEmrJobFunction.Arn
+
+  InitWorkflowFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 60
+      Role: !GetAtt OrchestrationLambdaRole.Arn
+      Environment:
+        Variables:
+          STATE_TABLE_NAME: !Ref JobStateTable
+          CATALOG_TABLE_NAME: !Ref JobCatalogTable
+      Code:
+        ZipFile: |
+          import os
+          import time
+          import boto3
+
+          ddb = boto3.resource("dynamodb")
+          state_table = ddb.Table(os.environ["STATE_TABLE_NAME"])
+          catalog_table = ddb.Table(os.environ["CATALOG_TABLE_NAME"])
+
+          def handler(event, _context):
+              workflow_id = event.get("workflowId")
+              jobs = event.get("jobs", [])
+              if not workflow_id:
+                  raise ValueError("workflowId is required")
+              if not jobs:
+                  raise ValueError("jobs array is required")
+
+              missing = []
+              for job in jobs:
+                  name = job.get("name")
+                  if not name:
+                      raise ValueError("Every job must include name")
+                  resp = catalog_table.get_item(Key={"JobName": name})
+                  if "Item" not in resp:
+                      missing.append(name)
+              if missing:
+                  raise ValueError(
+                      f"Jobs not found in catalog: {missing}. "
+                      "Register them in the job-catalog table first."
+                  )
+
+              ttl = int(time.time()) + 7 * 24 * 3600
+              now = int(time.time())
+
+              for job in jobs:
+                  state_table.put_item(Item={
+                      "WorkflowId": workflow_id,
+                      "JobName": job["name"],
+                      "Status": "PENDING",
+                      "DependsOn": job.get("dependsOn", []),
+                      "CreatedAt": now,
+                      "UpdatedAt": now,
+                      "ExpiresAt": ttl
+                  })
+
+              return {
+                  "workflowId": workflow_id,
+                  "jobCount": len(jobs)
+              }
+
+  RunEmrJobFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 900
+      Role: !GetAtt OrchestrationLambdaRole.Arn
+      Environment:
+        Variables:
+          STATE_TABLE_NAME: !Ref JobStateTable
+          CATALOG_TABLE_NAME: !Ref JobCatalogTable
+      Code:
+        ZipFile: |
+          import time
+          import os
+          import boto3
+
+          emr = boto3.client("emr-containers")
+          ddb = boto3.resource("dynamodb")
+          state_table = ddb.Table(os.environ["STATE_TABLE_NAME"])
+          catalog_table = ddb.Table(os.environ["CATALOG_TABLE_NAME"])
+
+          def update(workflow_id, job_name, status, extra=None):
+              now = int(time.time())
+              expr = "SET #s = :s, UpdatedAt = :u"
+              names = {"#s": "Status"}
+              vals = {":s": status, ":u": now}
+              if extra:
+                  for k, v in extra.items():
+                      expr += f", #{k} = :{k}"
+                      names[f"#{k}"] = k
+                      vals[f":{k}"] = v
+              state_table.update_item(
+                  Key={"WorkflowId": workflow_id, "JobName": job_name},
+                  UpdateExpression=expr,
+                  ExpressionAttributeNames=names,
+                  ExpressionAttributeValues=vals
+              )
+
+          def handler(event, _context):
+              workflow_id = event["workflowId"]
+              job = event["job"]
+              name = job["name"]
+
+              resp = catalog_table.get_item(Key={"JobName": name})
+              if "Item" not in resp:
+                  raise ValueError(f"Job '{name}' not found in job catalog")
+              catalog = resp["Item"]
+
+              vc_id = catalog["VirtualClusterId"]
+              exec_role = catalog["ExecutionRoleArn"]
+              release_label = catalog["ReleaseLabel"]
+              entry_point = catalog["EntryPoint"]
+              entry_point_args = list(catalog.get("EntryPointArguments", []))
+              spark_submit_params = catalog.get("SparkSubmitParameters", "")
+              log_uri_prefix = catalog.get("LogUriPrefix", "")
+              log_uri = f"{log_uri_prefix.rstrip('/')}/{workflow_id}/" if log_uri_prefix else ""
+
+              job_driver = {
+                  "sparkSubmitJobDriver": {
+                      "entryPoint": entry_point,
+                      "entryPointArguments": entry_point_args,
+                      "sparkSubmitParameters": spark_submit_params
+                  }
+              }
+
+              monitoring = {}
+              if log_uri:
+                  monitoring["s3MonitoringConfiguration"] = {"logUri": log_uri}
+
+              config_overrides = {}
+              if monitoring:
+                  config_overrides["monitoringConfiguration"] = monitoring
+
+              app_config = []
+              driver_pod_uri = catalog.get("PodTemplateDriverS3Uri", "")
+              executor_pod_uri = catalog.get("PodTemplateExecutorS3Uri", "")
+              if driver_pod_uri or executor_pod_uri:
+                  pod_confs = {}
+                  if driver_pod_uri:
+                      pod_confs["spark.kubernetes.driver.podTemplateFile"] = driver_pod_uri
+                  if executor_pod_uri:
+                      pod_confs["spark.kubernetes.executor.podTemplateFile"] = executor_pod_uri
+                  app_config.append({
+                      "classification": "spark-defaults",
+                      "properties": pod_confs
+                  })
+              if app_config:
+                  config_overrides["applicationConfiguration"] = app_config
+
+              update(workflow_id, name, "RUNNING")
+
+              start_kwargs = dict(
+                  name=f"{workflow_id}-{name}",
+                  virtualClusterId=vc_id,
+                  executionRoleArn=exec_role,
+                  releaseLabel=release_label,
+                  jobDriver=job_driver,
+              )
+              if config_overrides:
+                  start_kwargs["configurationOverrides"] = config_overrides
+
+              start_resp = emr.start_job_run(**start_kwargs)
+              run_id = start_resp["id"]
+
+              update(workflow_id, name, "RUNNING", {"JobRunId": run_id, "VirtualClusterId": vc_id})
+
+              for _ in range(50):
+                  r = emr.describe_job_run(virtualClusterId=vc_id, id=run_id)["jobRun"]
+                  state = r.get("state")
+                  if state == "COMPLETED":
+                      update(workflow_id, name, "SUCCEEDED", {"StateDetails": r.get("stateDetails", "")})
+                      return {
+                          "jobName": name,
+                          "jobRunId": run_id,
+                          "state": state,
+                          "stateDetails": r.get("stateDetails", "")
+                      }
+                  if state in ("FAILED", "CANCELLED", "CANCEL_PENDING"):
+                      update(
+                          workflow_id,
+                          name,
+                          "FAILED",
+                          {
+                              "FailureReason": r.get("failureReason", ""),
+                              "StateDetails": r.get("stateDetails", "")
+                          }
+                      )
+                      raise Exception(
+                          f"Job {name} failed: {r.get('failureReason')} | {r.get('stateDetails')}"
+                      )
+                  time.sleep(10)
+
+              update(workflow_id, name, "RUNNING", {"StateDetails": "Still running; Step Functions will poll again"})
+              return {
+                  "jobName": name,
+                  "jobRunId": run_id,
+                  "state": "RUNNING",
+                  "stateDetails": "Lambda returned control while job still executing"
+              }
+  JobOrchestrationStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub "${AWS::StackName}-job-orchestrator"
+      RoleArn: !GetAtt StepFunctionsRole.Arn
+      DefinitionString: !Sub |
+        {
+          "Comment": "Simple EMR on EKS job runner",
+          "StartAt": "RunJob",
+          "States": {
+            "RunJob": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${RunEmrJobFunction.Arn}",
+                "Payload.$": "$"
+              },
+              "ResultPath": "$.result",
+              "OutputPath": "$",
+              "End": true
+            }
+          }
+        }
+
+  QueueStarterFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 60
+      Role: !GetAtt OrchestrationLambdaRole.Arn
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !Ref JobOrchestrationStateMachine
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import re
+          import uuid
+          import boto3
+
+          sfn = boto3.client("stepfunctions")
+
+          def parse_body(raw):
+              if isinstance(raw, dict):
+                  return raw
+              text = (raw or "").strip()
+              try:
+                  return json.loads(text)
+              except Exception:
+                  # Fallback for relaxed bodies like {workflowId:'x',jobs:[...]}.
+                  fixed = re.sub(r'([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:', r'\1"\2":', text)
+                  fixed = fixed.replace("'", '"')
+                  return json.loads(fixed)
+
+          def handler(event, _context):
+              started = []
+              for record in event.get("Records", []):
+                  body = parse_body(record.get("body", "{}"))
+                  if "workflowId" not in body:
+                      body["workflowId"] = f"wf-{uuid.uuid4().hex[:12]}"
+                  resp = sfn.start_execution(
+                      stateMachineArn=os.environ["STATE_MACHINE_ARN"],
+                      name=f"{body['workflowId']}-{uuid.uuid4().hex[:8]}",
+                      input=json.dumps(body)
+                  )
+                  started.append({
+                      "workflowId": body["workflowId"],
+                      "executionArn": resp["executionArn"]
+                  })
+              return {"started": started}
+
+  TriggerSingleJobFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 60
+      Role: !GetAtt OrchestrationLambdaRole.Arn
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !Ref JobOrchestrationStateMachine
+          CATALOG_TABLE_NAME: !Ref JobCatalogTable
+          DEFAULT_VIRTUAL_CLUSTER_ID: !Ref DefaultVirtualClusterId
+          DEFAULT_EXECUTION_ROLE_ARN: !Ref DefaultExecutionRoleArn
+          DEFAULT_RELEASE_LABEL: !Ref DefaultReleaseLabel
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import time
+          import uuid
+          import boto3
+
+          ddb = boto3.resource("dynamodb")
+          sfn = boto3.client("stepfunctions")
+          catalog_table = ddb.Table(os.environ["CATALOG_TABLE_NAME"])
+
+          def handler(event, _context):
+              request = event.get("jobDefinition", event)
+
+              job_name = request.get("jobName") or request.get("name")
+              entry_point = request.get("entryPoint")
+              if not job_name:
+                  raise ValueError("jobName is required")
+              if not entry_point:
+                  raise ValueError("entryPoint is required")
+
+              workflow_id = request.get("workflowId") or f"wf-single-job-{uuid.uuid4().hex[:12]}"
+              execution_name = request.get("executionName") or f"{workflow_id}-{uuid.uuid4().hex[:8]}"
+
+              catalog_item = {
+                  "JobName": job_name,
+                  "VirtualClusterId": request.get("virtualClusterId") or os.environ["DEFAULT_VIRTUAL_CLUSTER_ID"],
+                  "ExecutionRoleArn": request.get("executionRoleArn") or os.environ["DEFAULT_EXECUTION_ROLE_ARN"],
+                  "ReleaseLabel": request.get("releaseLabel") or os.environ["DEFAULT_RELEASE_LABEL"],
+                  "EntryPoint": entry_point,
+                  "EntryPointArguments": request.get("entryPointArguments", []),
+                  "SparkSubmitParameters": request.get("sparkSubmitParameters", ""),
+                  "LogUriPrefix": request.get("logUriPrefix", ""),
+                  "Description": request.get("description", "Reusable single-job EMR on EKS trigger")
+              }
+
+              driver_pod_uri = request.get("podTemplateDriverS3Uri", "")
+              executor_pod_uri = request.get("podTemplateExecutorS3Uri", "")
+              if driver_pod_uri:
+                  catalog_item["PodTemplateDriverS3Uri"] = driver_pod_uri
+              if executor_pod_uri:
+                  catalog_item["PodTemplateExecutorS3Uri"] = executor_pod_uri
+
+              catalog_table.put_item(Item=catalog_item)
+
+              execution_input = {
+                  "workflowId": workflow_id,
+                  "job": {
+                      "name": job_name
+                  }
+              }
+
+              response = sfn.start_execution(
+                  stateMachineArn=os.environ["STATE_MACHINE_ARN"],
+                  name=execution_name,
+                  input=json.dumps(execution_input)
+              )
+
+              return {
+                  "workflowId": workflow_id,
+                  "jobName": job_name,
+                  "executionArn": response["executionArn"],
+                  "catalogItem": catalog_item,
+                  "startedAt": int(time.time())
+              }
+
+  QueueStarterEventSource:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 1
+      Enabled: true
+      EventSourceArn: !GetAtt OrchestrationQueue.Arn
+      FunctionName: !Ref QueueStarterFunction
+
+  QueueStarterPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref QueueStarterFunction
+      Principal: sqs.amazonaws.com
+      SourceArn: !GetAtt OrchestrationQueue.Arn
+
+Conditions:
+  UseCustomTableName: !Not [!Equals [!Ref StateTableName, ""]]
+
+Outputs:
+  OrchestrationQueueUrl:
+    Value: !Ref OrchestrationQueue
+
+  OrchestrationQueueArn:
+    Value: !GetAtt OrchestrationQueue.Arn
+
+  JobStateTableName:
+    Value: !Ref JobStateTable
+
+  StateMachineArn:
+    Value: !Ref JobOrchestrationStateMachine
+
+  QueueStarterFunctionArn:
+    Value: !GetAtt QueueStarterFunction.Arn
+
+  TriggerSingleJobFunctionArn:
+    Value: !GetAtt TriggerSingleJobFunction.Arn
+
+  JobCatalogTableName:
+    Value: !Ref JobCatalogTable
+    Description: DynamoDB table where job definitions (code location, pod config, Spark params) are stored
