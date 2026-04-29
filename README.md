@@ -13,3 +13,12 @@
   "logUriPrefix": "s3://REPLACE_WITH_BUCKET/manual-test/logs",
   "description": "Single-step-function single-job manual EMR on EKS test"
 }
+
+
+
+{
+  "workflowId": "wf-single-job-20260429",
+  "job": {
+    "name": "simple-file-process"
+  }
+}
