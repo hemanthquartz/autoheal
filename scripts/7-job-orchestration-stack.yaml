@@ -223,6 +223,7 @@ Resources:
           CATALOG_TABLE_NAME: !Ref JobCatalogTable
       Code:
         ZipFile: |
+          import json
           import time
           import os
           import boto3
@@ -233,6 +234,14 @@ Resources:
           catalog_table = ddb.Table(os.environ["CATALOG_TABLE_NAME"])
 
           def update(workflow_id, job_name, status, extra=None):
+              print(json.dumps({
+                "message": "Updating state table",
+                "table": os.environ["STATE_TABLE_NAME"],
+                "workflowId": workflow_id,
+                "jobName": job_name,
+                "status": status,
+                "extra": extra or {}
+              }))
               now = int(time.time())
               expr = "SET #s = :s, UpdatedAt = :u"
               names = {"#s": "Status"}
@@ -248,16 +257,44 @@ Resources:
                   ExpressionAttributeNames=names,
                   ExpressionAttributeValues=vals
               )
+                  print(json.dumps({
+                    "message": "State table update complete",
+                    "table": os.environ["STATE_TABLE_NAME"],
+                    "workflowId": workflow_id,
+                    "jobName": job_name,
+                    "status": status
+                  }))
 
           def handler(event, _context):
+                  print(json.dumps({
+                    "message": "RunEmrJobFunction invoked",
+                    "stateTable": os.environ["STATE_TABLE_NAME"],
+                    "catalogTable": os.environ["CATALOG_TABLE_NAME"],
+                    "event": event
+                  }, default=str))
               workflow_id = event["workflowId"]
               job = event["job"]
               name = job["name"]
 
+                  print(json.dumps({
+                    "message": "Fetching job from catalog",
+                    "jobName": name,
+                    "catalogTable": os.environ["CATALOG_TABLE_NAME"]
+                  }))
               resp = catalog_table.get_item(Key={"JobName": name})
               if "Item" not in resp:
+                    print(json.dumps({
+                      "message": "Job not found in catalog",
+                      "jobName": name,
+                      "catalogResponse": resp
+                    }, default=str))
                   raise ValueError(f"Job '{name}' not found in job catalog")
               catalog = resp["Item"]
+                  print(json.dumps({
+                    "message": "Catalog entry loaded",
+                    "jobName": name,
+                    "catalog": catalog
+                  }, default=str))
 
               vc_id = catalog["VirtualClusterId"]
               exec_role = catalog["ExecutionRoleArn"]
@@ -312,14 +349,36 @@ Resources:
               if config_overrides:
                   start_kwargs["configurationOverrides"] = config_overrides
 
+                print(json.dumps({
+                  "message": "Starting EMR job run",
+                  "workflowId": workflow_id,
+                  "jobName": name,
+                  "startJobRunRequest": start_kwargs
+                }, default=str))
+
               start_resp = emr.start_job_run(**start_kwargs)
               run_id = start_resp["id"]
+                print(json.dumps({
+                  "message": "EMR job run started",
+                  "workflowId": workflow_id,
+                  "jobName": name,
+                  "jobRunId": run_id,
+                  "startJobRunResponse": start_resp
+                }, default=str))
 
               update(workflow_id, name, "RUNNING", {"JobRunId": run_id, "VirtualClusterId": vc_id})
 
               for _ in range(50):
                   r = emr.describe_job_run(virtualClusterId=vc_id, id=run_id)["jobRun"]
                   state = r.get("state")
+                  print(json.dumps({
+                    "message": "Polled EMR job state",
+                    "workflowId": workflow_id,
+                    "jobName": name,
+                    "jobRunId": run_id,
+                    "state": state,
+                    "details": r
+                  }, default=str))
                   if state == "COMPLETED":
                       update(workflow_id, name, "SUCCEEDED", {"StateDetails": r.get("stateDetails", "")})
                       return {
@@ -343,6 +402,12 @@ Resources:
                       )
                   time.sleep(10)
 
+                      print(json.dumps({
+                        "message": "Lambda timeout window reached while job still running",
+                        "workflowId": workflow_id,
+                        "jobName": name,
+                        "jobRunId": run_id
+                      }))
               update(workflow_id, name, "RUNNING", {"StateDetails": "Still running; Step Functions will poll again"})
               return {
                   "jobName": name,
@@ -450,17 +515,38 @@ Resources:
           catalog_table = ddb.Table(os.environ["CATALOG_TABLE_NAME"])
 
           def handler(event, _context):
+              print(json.dumps({
+                "message": "TriggerSingleJobFunction invoked",
+                "catalogTable": os.environ["CATALOG_TABLE_NAME"],
+                "stateMachineArn": os.environ["STATE_MACHINE_ARN"],
+                "event": event
+              }, default=str))
               request = event.get("jobDefinition", event)
+              print(json.dumps({
+                "message": "Resolved trigger request",
+                "request": request
+              }, default=str))
 
               job_name = request.get("jobName") or request.get("name")
               entry_point = request.get("entryPoint")
               if not job_name:
+                print('{"message": "jobName missing from trigger request"}')
                   raise ValueError("jobName is required")
               if not entry_point:
+                print(json.dumps({
+                  "message": "entryPoint missing from trigger request",
+                  "jobName": job_name
+                }))
                   raise ValueError("entryPoint is required")
 
               workflow_id = request.get("workflowId") or f"wf-single-job-{uuid.uuid4().hex[:12]}"
               execution_name = request.get("executionName") or f"{workflow_id}-{uuid.uuid4().hex[:8]}"
+              print(json.dumps({
+                "message": "Computed execution identifiers",
+                "workflowId": workflow_id,
+                "executionName": execution_name,
+                "jobName": job_name
+              }))
 
               catalog_item = {
                   "JobName": job_name,
@@ -481,7 +567,17 @@ Resources:
               if executor_pod_uri:
                   catalog_item["PodTemplateExecutorS3Uri"] = executor_pod_uri
 
+                print(json.dumps({
+                  "message": "Writing catalog item to DynamoDB",
+                  "table": os.environ["CATALOG_TABLE_NAME"],
+                  "catalogItem": catalog_item
+                }, default=str))
               catalog_table.put_item(Item=catalog_item)
+                print(json.dumps({
+                  "message": "Catalog item write complete",
+                  "table": os.environ["CATALOG_TABLE_NAME"],
+                  "jobName": job_name
+                }))
 
               execution_input = {
                   "workflowId": workflow_id,
@@ -490,11 +586,25 @@ Resources:
                   }
               }
 
+                print(json.dumps({
+                  "message": "Starting Step Functions execution",
+                  "stateMachineArn": os.environ["STATE_MACHINE_ARN"],
+                  "executionName": execution_name,
+                  "executionInput": execution_input
+                }, default=str))
+
               response = sfn.start_execution(
                   stateMachineArn=os.environ["STATE_MACHINE_ARN"],
                   name=execution_name,
                   input=json.dumps(execution_input)
               )
+
+                print(json.dumps({
+                  "message": "Step Functions execution started",
+                  "response": response,
+                  "jobName": job_name,
+                  "workflowId": workflow_id
+                }, default=str))
 
               return {
                   "workflowId": workflow_id,
