@@ -1,4 +1,543 @@
-PyYAML
-openai
-PyGithub
-lunary
+import sys
+import json
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from pyspark.sql import SparkSession
+from awsglue.job import Job
+import boto3
+import pyspark.sql.functions as F
+from pyspark.sql.types import MapType, StringType
+from datetime import date
+from pyspark.sql.functions import *
+import logging
+import traceback
+# from pyspark_functions import trim_all_null_blank as trim_all, clean_filler, format_integer_to_string_date
+from sales_functions import check_iceberg_table_exists,trim_all
+
+
+#account_id = '767398099036'
+#account_id = '847515726144'
+account_id = boto3.client('sts').get_caller_identity()['Account']
+
+#s3://ace-da-insurance-huon-us-west-2-847515726144/attunity_table_data/hunp2_datalake.db/huns_polqte
+print("account_id is :",account_id)
+
+spark = SparkSession.builder.config('spark.sql.catalog.glue_catalog_datalake', 'org.apache.iceberg.spark.SparkCatalog')\
+    .config('spark.sql.catalog.glue_catalog_datalake.warehouse', 's3://ace-da-insurance-datalake-{0}/insurance_datalake.db/'.format(account_id))\
+    .config('spark.sql.catalog.glue_catalog_datalake.catalog-impl', 'org.apache.iceberg.aws.glue.GlueCatalog')\
+    .config('spark.sql.catalog.glue_catalog_datalake.io-impl', 'org.apache.iceberg.aws.s3.S3FileIO')\
+    .config('spark.sql.catalog.glue_catalog_base', 'org.apache.iceberg.spark.SparkCatalog')\
+    .config('spark.sql.catalog.glue_catalog_base.warehouse', 's3://ace-da-insurance-base-us-west-2-{0}/'.format(account_id))\
+    .config('spark.sql.catalog.glue_catalog_base.catalog-impl', 'org.apache.iceberg.aws.glue.GlueCatalog')\
+    .config('spark.sql.catalog.glue_catalog_base.io-impl', 'org.apache.iceberg.aws.s3.S3FileIO')\
+    .config('spark.sql.extensions','org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions')\
+    .config("spark.sql.iceberg.handle-timestamp-without-timezone", "true")\
+    .config("spark.sql.sources.partitionOverwriteMode","dynamic")\
+    .getOrCreate()
+
+
+glueContext = GlueContext(spark.sparkContext)
+job = Job(glueContext)
+
+## @params: [JOB_NAME]
+args = getResolvedOptions(sys.argv, ['JOB_NAME'])
+#arg = getResolvedOptions(sys.argv, ['config_file', 'env_file', 'sql_file', 'partition_keys_dest_table'])
+arg = getResolvedOptions(sys.argv, ['config_file', 'env_file', 'sql_file'])
+config_file = arg['config_file']
+#config_bucket = arg['config_bucket']
+env_file = arg['env_file']
+sql_file = arg['sql_file']
+#partition_keys_dest_table = arg['partition_keys_dest_table']
+
+print(f'Parameters are {config_file}, {env_file}, {sql_file}')
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+with open(env_file, 'r') as env_config_file:
+     env = json.load(env_config_file)
+environment = env.get(account_id)    
+#environment = env_var
+logger.info(f"The current environment is {environment}")
+
+with open(config_file, 'r') as config_file:
+     config = json.load(config_file)
+
+# Select the configuration for the specified environment
+env_config = config.get(environment)
+
+job.init(args['JOB_NAME'], args)
+
+
+if env_config:
+    print(f"Loading configuration for environment: {environment}")
+    insurance_datalake_jqs_tblautoquote = "glue_catalog_datalake." + env_config["insurance_datalake_jqs_tblautoquote"]
+    insurance_datalake_jqs_tblprospect = "glue_catalog_datalake." + env_config["quote_datalake_jqs_tblprospect"]
+    insurance_datalake_jqs_tblperson = "glue_catalog_datalake." + env_config["quote_datalake_jqs_tblperson"]
+    insurance_datalake_jqs_tblpersontype = "glue_catalog_datalake." + env_config["quote_datalake_jqs_tblpersontype"]
+    insurance_datalake_jqs_tblautoquote_campaign = "glue_catalog_datalake." + env_config["quote_datalake_jqs_tblautoquote_campaign"]
+    insurance_datalake_jqs_tblleadsource = "glue_catalog_datalake." + env_config["quote_datalake_jqs_tblleadsource"]
+    insurance_datalake_jqs_tblperson_phone = "glue_catalog_datalake." + env_config["quote_datalake_jqs_tblperson_phone"]
+    insurance_datalake_jqs_tblperson_phoneadditional = "glue_catalog_datalake." + env_config["quote_datalake_jqs_tblperson_phoneadditional"]
+    insurance_datalake_jqs_tblphonetype = "glue_catalog_datalake." + env_config["quote_datalake_jqs_tblphonetype"]
+    insurance_datalake_jqs_tblphone = "glue_catalog_datalake." + env_config["quote_datalake_jqs_tblphone"]
+    insurance_datalake_jqs_tblperson_address = "glue_catalog_datalake." + env_config["quote_datalake_jqs_tblperson_address"]
+    insurance_datalake_jqs_tbladdress = "glue_catalog_datalake." + env_config["quote_datalake_jqs_tbladdress"]
+    insurance_datalake_jqs_tbladdresstype = "glue_catalog_datalake." + env_config["quote_datalake_jqs_tbladdresstype"]
+    insurance_datalake_jqs_tblprospect_iqq_mapper = "glue_catalog_datalake." + env_config["quote_datalake_jqs_tblprospect_iqq_mapper"]
+    insurance_datalake_jqs_tblvehicle = "glue_catalog_datalake." + env_config["quote_datalake_jqs_tblvehicle"]
+    insurance_datalake_jqs_tbldriver = "glue_catalog_datalake." + env_config["quote_datalake_jqs_tbldriver"]
+    insurance_datalake_jq_tblautoquote = "glue_catalog_datalake." + env_config["quote_datalake_jq_tblautoquote"]
+    insurance_datalake_jq_tblstate = "glue_catalog_datalake." + env_config["quote_datalake_jq_tblstate"]
+    insurance_datalake_jq_tblshadowgoldprospectmap = "glue_catalog_datalake." + env_config["quote_datalake_jq_tblshadowgoldprospectmap"]
+    insurance_datalake_jq_tblquotestatustype = "glue_catalog_datalake." + env_config["quote_datalake_jq_tblquotestatustype"]
+    insurance_datalake_jq_tblolbjewellink = "glue_catalog_datalake." + env_config["quote_datalake_jq_tblolbjewellink"]
+    insurance_datalake_jnb_tblpolicy = "glue_catalog_datalake." + env_config["quote_datalake_jnb_tblpolicy"]
+    insurance_datalake_jnb_tblcustomerroleonpolicy = "glue_catalog_datalake." + env_config["quote_datalake_jnb_tblcustomerroleonpolicy"]
+    insurance_datalake_jnb_tblmultipolicydisctype = "glue_catalog_datalake." + env_config["quote_datalake_jnb_tblmultipolicydisctype"]
+    insurance_datalake_jnb_tblpolicyprefixtype = "glue_catalog_datalake." + env_config["quote_datalake_jnb_tblpolicyprefixtype"]
+    quote_base_auto_quote = "glue_catalog_datalake.insurance_base.auto_quote"
+    final_table = quote_base_auto_quote
+
+
+def write_to_iceberg_partitioned_ddl(df, table_dest, part_cols,ddl_path):
+    # df = trim_all(df).select(cols).repartition(F.col('p_yearmon'))
+    iceberg_catalog, iceberg_db, iceberg_table = table_dest.split(".")
+    try:
+        # Check if the Iceberg table exists
+        table_exists = check_iceberg_table_exists(iceberg_db, iceberg_table)
+
+        if table_exists:
+            pass
+        else:
+            # Create new Iceberg table with partitioning
+            sql_text = spark.read.text(ddl_path).collect()
+            ddl_statement = " ".join([row.value for row in sql_text])
+            ddl_statement = ddl_statement.format(account_id=account_id)
+            ddl_statement = ddl_statement.replace("glue_catalog_datalake.", "glue_catalog_base.")
+            #ddl_statement = ddl_statement.replace("glue_catalog_datalake.", "glue_catalog_base.")
+            # Execute the DDL to create the Iceberg table
+            spark.sql(ddl_statement)
+
+            logging.info(f"Created new Iceberg table: {table_dest}")
+
+        
+        if df.count() > 0:
+            
+            df.repartition(*part_cols.split(",")).writeTo(table_dest).option("format", "iceberg").overwritePartitions()
+        else:
+            logging.info("No rows in final DF to write into table")
+
+        logging.info(f"Data overwritten in existing table: {table_dest}")
+
+    except Exception as e:
+        logging.info(f"Unexpected error: {e}")
+        raise
+
+#quote_base_auto_quote = 'aew_insurance.auto_quote'
+final_table = quote_base_auto_quote
+
+print ('JQS PERSON TEMP TABLE -- STARTED')
+
+person_temp_tbl = spark.sql("""
+SELECT quote.agent_id,
+       quote.prospect_id,
+       quote.quote_id,
+       prospect.agent_id AS prospect_agent_id,
+       prospect.person_id,
+       person.person_id AS person_person_id,
+       person.last_nm,
+       person.first_nm,
+       person.middle_nm,
+       person.persontp_id AS person_persontp_id,
+       persontype.persontp_tx,
+       persontype.persontp_id
+FROM """ + insurance_datalake_jqs_tblautoquote + """ quote
+LEFT JOIN """ + insurance_datalake_jqs_tblprospect + """ prospect ON prospect.person_id = quote.prospect_id
+LEFT JOIN """ + insurance_datalake_jqs_tblperson + """ person ON person.person_id = prospect.person_id
+LEFT JOIN """ + insurance_datalake_jqs_tblpersontype + """ persontype ON person.persontp_id = persontype.persontp_id
+""")
+person_temp_tbl.registerTempTable("person_temp_tbl")
+print ('JQS PERSON TEMP TABLE -- COMPLETED')
+print ('CAMPAIGN LEAD TEMP TABLE -- STARTED')
+
+campaign_lead_tmptbl = spark.sql("""
+SELECT campaign.*,
+       leadsource.source_cd,
+       leadsource.source_tx
+FROM """ + insurance_datalake_jqs_tblautoquote_campaign + """ campaign
+LEFT JOIN """ + insurance_datalake_jqs_tblleadsource + """ leadsource ON campaign.source_id = leadsource.source_id
+""")
+
+campaign_lead_tmptbl.registerTempTable("campaign_lead_tmptbl")
+
+print ('CAMPAIGN LEAD TEMP TABLE -- COMPLETED')
+print ('JQS PHONE TEMP TABLE -- STARTED')
+
+jq_phone_temp_tbl = spark.sql("""
+SELECT quote.agent_id AS quote_agent_id,
+       quote.prospect_id AS quote_prospect_id,
+       quote.quote_id AS quote_quote_id,
+       person.last_nm,
+       person.first_nm,
+       person.persontp_id,
+       person_phone.phonetp_id,
+       persontype.persontp_tx,
+       phonetype.phonetp_tx,
+       phone.phone_cd,
+       phone.agent_id
+FROM """ + insurance_datalake_jqs_tblautoquote + """ quote
+LEFT JOIN """ + insurance_datalake_jqs_tblperson + """ person ON person.agent_id=quote.agent_id
+AND person.person_id=quote.prospect_id
+LEFT JOIN
+  ( SELECT *
+   FROM
+     (SELECT phonetp_id,
+             agent_id,
+             person_id,
+             phone_id,
+             ROW_NUMBER() OVER(PARTITION BY agent_id, person_id
+                               ORDER BY phone_id DESC) rown
+      FROM """ + insurance_datalake_jqs_tblperson_phone + """) t
+   WHERE rown = 1 ) person_phone ON person.agent_id=person_phone.agent_id
+AND person.person_id = person_phone.person_id
+LEFT JOIN """ + insurance_datalake_jqs_tblpersontype + """ persontype ON person.persontp_id=persontype.persontp_id
+AND person.person_id=person_phone.person_id
+LEFT JOIN """ + insurance_datalake_jqs_tblphonetype + """ phonetype ON person_phone.phonetp_id=phonetype.phonetp_id
+LEFT JOIN
+  ( SELECT *
+   FROM
+     (SELECT phone_cd,
+             agent_id,
+             phone_id,
+             phonetp_id,
+             ROW_NUMBER() OVER(PARTITION BY agent_id, phone_id
+                               ORDER BY phonetp_id DESC) rown
+      FROM """ + insurance_datalake_jqs_tblphone + """) t
+   WHERE rown = 1 ) phone ON phone.agent_id=person_phone.agent_id
+AND phone.phone_id=person_phone.phone_id
+""")
+
+jq_phone_temp_tbl.registerTempTable("jq_phone_temp_tbl")
+
+print ('JQS PHONE TEMP TABLE -- COMPLETED')
+print ('JQS ADDRESS TEMP TABLE -- STARTED')
+
+jq_addr_temp_tbl = spark.sql("""
+SELECT personaddress.agent_id,
+       personaddress.person_id,
+       personaddress.addresstp_id,
+       addresstype.addresstp_tx,
+       address.address_id,
+       address.addressline1_nm,
+       address.addressline2_nm,
+       address.city_nm,
+       address.state_id,
+       state.state_cd,
+       address.country_nm,
+       address.county_nm,
+       address.zip_cd
+FROM """ + insurance_datalake_jqs_tblperson_address + """ personaddress
+LEFT JOIN """ + insurance_datalake_jqs_tbladdress + """ address ON personaddress.address_id = address.address_id
+LEFT JOIN """ + insurance_datalake_jqs_tbladdresstype + """ addresstype ON addresstype.addresstp_id = personaddress.addresstp_id
+LEFT JOIN (select state_id,state_cd,state_nm from """ + insurance_datalake_jq_tblstate + """) state ON address.state_id = state.state_id
+WHERE address.addresstp_id=1
+""")
+
+jq_addr_temp_tbl.registerTempTable("jq_addr_temp_tbl")
+
+print ('JQS ADDRESS TEMP TABLE -- COMPLETED')
+
+# log data for OLB --> Jewel connection
+print('JEWEL-OLB MAPPING -- STARTED')
+df_jewelolblog = spark.sql("""
+SELECT 
+    l.jwl_prospect_id AS prospect_id,
+    l.jwl_quote_id AS quote_id,
+    CAST(l.olb_quote_id AS BIGINT) AS log_olb_quote_id,
+    l.olb_huonpolicynumber AS log_huonpolicynumbercode,
+    cast(insert_date as string) as log_convertedstartdate
+FROM """ + insurance_datalake_jq_tblolbjewellink + """ l
+""").filter("to_date(log_convertedstartdate) >= '2019-01-01'")
+trim_all(df_jewelolblog).registerTempTable("jewel_olb_log")
+print('JEWEL-OLB MAPPING -- COMPLETED')
+
+df = spark.sql ("""
+SELECT CAST(jqsauto.quote_id AS BIGINT) AS quote_id
+,'JEWEL SHADOW' as data_source
+, '' AS encoded_quote_id
+,'' as role_code
+,'' as quote_membernumber
+,'' as club_code
+, 'CAA' AS product
+, '' AS application_channel
+, 'CAA' AS quote_product
+, '' AS policy_id
+,CAST('' AS INT) AS policy_number
+, '' AS policy_number_encoded
+, '' AS policy_effective_date
+, '' AS policy_expiration_date
+, '' AS product_policy_number
+, '' AS parent_policy_number
+, '' AS original_quote_id
+, UPPER(policy.name_insured_1_tx) AS named_insured
+, cast(trim(prospect.customerid) as bigint) AS customer_id
+, '' AS client_id
+, '' AS account_name 
+, cast(jqsauto.prospect_id as bigint) AS prospect_id
+, concat_ws(' ', initcap(person.first_nm),initcap(person.middle_nm),initcap(person.last_nm)) AS prospect_full_name
+, initcap(person.first_nm) as prospect_first_name
+, initcap(person.middle_nm) as prospect_middle_name
+, initcap(person.last_nm) as prospect_last_name
+, '' AS prospect_source
+, '' AS process_indicator
+, '' AS sale_status
+, '' AS bind_type
+, '' AS page_furthest_visited
+, '' AS page_last_updated
+, concat_ws('-',trim(leadsource.source_cd),trim(leadsource.source_tx)) AS lead_source_code
+, b.quotetype AS lead_type
+, b.iqq_id AS lead_number
+, '' AS plan_type_selected
+, '' AS plan_type_selected_createtime
+, '' AS risk_cis_score
+, '' AS business_class 
+, jqsauto.ipremium AS binded_premium
+, '' AS basic_premium
+, '' AS standard_premium
+, '' AS enhanced_premium
+, UPPER(jqsauto.status_fg) AS quote_status 
+, '' AS create_employee_number
+,cast(from_utc_timestamp(jqsauto.createdate_dt, 'US/Pacific') as string) as create_timestamp
+, '' AS update_employee_number
+, '' AS update_timestamp
+, '' AS promote_employee_number
+,cast(from_utc_timestamp(jqsauto.promotion_dt, 'US/Pacific') as string) as promote_timestamp
+, UPPER(jqsauto.txtquotedescription) AS notes
+, concat(UPPER(addr.addressline1_nm), UPPER(addr.addressline2_nm)) AS address
+, UPPER(addr.city_nm) AS city_name
+, TRIM(UPPER(addr.state_cd)) AS state_code
+, UPPER(addr.zip_cd) AS zip_code
+, UPPER(addr.county_nm) AS county_name
+, UPPER(addr.country_nm) AS country_code
+, regexp_replace(h_phone.phone_cd,' ','') AS home_phone_number 
+, regexp_replace(c_phone.phone_cd,' ','') AS cell_phone_number
+, regexp_replace(w_phone.phone_cd,' ','') AS work_phone_number
+, '' AS company_code
+, '' AS sub_company_code
+, CASE WHEN UPPER(TRIM(disc.multipolicydisctp_cd)) !='' THEN "Y" ELSE "N" END AS multi_policy_indicator
+, '' AS multi_policy_number
+, UPPER(campaign.campaign_cd) AS campaign_code_1  
+, '' AS campaign_code_2
+, vehicle.number_of_vehicles AS number_of_vehicles
+, driver.number_of_drivers AS number_of_drivers
+, '' AS promoted_quote_id
+, UPPER(jqsauto.txtquotedescription) AS policy_description
+, '' AS policy_notes_text
+, UPPER(TRIM(jqsauto.txtmultipolicydiscount)) AS multi_policy_code
+, '' AS multi_policy_difference
+, '' AS prior_premium
+, '' AS tier_code
+, '' AS created_do_number
+, '' AS selected_premium
+, '' AS annual_cost
+, '' AS full_payment_premium
+, '' AS aip_premium_amount
+, '' AS aip_status
+, '' AS aip_status_description
+, trim(upper(jqsauto.status_fg)) AS policy_status
+, trim(upper(statustype.status_tx)) as policy_status_description
+, '' AS branch_number
+, '' AS branch_name
+, '' AS service_team
+, cast(policy.policyprefixtp_id as string) AS policy_prefix_type
+, UPPER(prefix.policyprefixtp_tx) AS policy_prefix_type_description
+, concat_ws('-',cast(trim(person.persontp_id) as string),trim(UPPER(person.persontp_tx))) AS person_type 
+, UPPER(prospect.email_tx) AS prospect_email_address
+, concat_ws('-',UPPER(TRIM(disc.multipolicydisctp_cd)),UPPER(TRIM(disc.multipolicydisctp_tx))) AS multi_policy_description 
+, '' AS huon_upload_indicator
+, '' AS huon_upload_return_status
+, '' AS huon_upload_status_type_id
+, '' AS huon_upload_status_type_description
+, '' AS witness_date
+, c.goldprospect_id AS gold_prospect_id
+, 1 AS gold_quote_id    
+, '' AS policy_sequence_number
+, '' AS quote_policy_number
+, '' AS issued_employee_number
+, '' AS issued_timestamp
+, '' AS zip_code_plus
+, log.log_olb_quote_id
+, CAST(NULL AS STRING) AS log_policyid
+, log.log_huonpolicynumbercode
+, CAST(NULL AS STRING) AS log_huonpolicynumbercodeshadow
+, log.log_convertedstartdate
+, CAST(NULL AS STRING) AS log_convertedenddate
+, '' AS workflow_step
+,CAST(NULL AS STRING) AS bookroll_indicator
+,CAST(NULL AS STRING) AS membership_number
+,CAST(NULL AS STRING) AS create_userid
+,CAST(NULL AS STRING) AS prior_carrier_name
+,CAST(NULL AS STRING) AS close_date
+,CAST(NULL AS STRING) AS territory_code
+,CAST(NULL AS INT) AS uw_tier
+,CAST(NULL AS INT) AS glass_loss_count
+,CAST(NULL AS BOOLEAN) AS member_indicator
+,CAST(NULL AS STRING) AS multi_policy_name
+,CAST(NULL AS STRING) as original_owner_indicator
+,CAST(NULL AS STRING) as prior_bi_limit
+,CAST(NULL AS STRING) as prior_liability
+,CAST(NULL AS DECIMAL(10,2)) as unmatched_premium
+,CAST(NULL AS DECIMAL(18,2)) as upfront_payments
+, '' AS quote_sub_type
+,CAST(NULL AS STRING) AS advance_purchase_indicator
+,CAST(NULL AS STRING) AS create_producer_code
+,CAST(NULL AS STRING) AS update_producer_code
+,CAST(NULL AS STRING) AS create_producer_employeenumber
+,CAST(NULL AS STRING) AS update_producer_employeenumber
+,CAST(NULL AS STRING) AS selected_version
+,CAST(NULL AS DECIMAL(18,2)) AS downpayment
+,CAST(NULL AS DECIMAL(18,2)) AS onetimefee
+,CAST(NULL AS INT) AS lead_source_code_id
+,CAST(NULL as SMALLINT) as policy_creditscore
+,CAST(NULL AS STRING) AS create_producer_description
+,CAST(NULL AS STRING) AS update_producer_description
+,CAST(NULL AS STRING) AS multi_car_discount 
+,CAST(NULL AS STRING) AS cis_used 
+,CAST(NULL AS STRING) AS policy_inception_date 
+,CAST(NULL AS STRING) AS new_renew 
+,CAST(NULL AS decimal(18,2)) AS original_premium 
+,CAST(NULL AS STRING) AS policy_cancellation_date 
+,CAST(NULL AS double) AS taxes 
+,CAST(NULL AS decimal(18,2)) AS taxsurchargesrpt 
+,CAST(NULL AS STRING) AS writtendate 
+,CAST(NULL AS decimal(18,2)) AS prorated_premium 
+,CAST(NULL AS int) AS policy_term_number 
+,CAST(NULL AS string) AS term_type 
+,CAST(NULL AS string) AS paid_in_full_indicator 
+,CAST(NULL AS string) AS aceeffectivedate 
+,CAST(NULL AS string) AS rateasofdate 
+,CAST(NULL AS string) AS NamedNonOwner 
+,CAST(NULL AS string) AS latest_term_indicator 
+,CAST(NULL AS string) AS latest_transaction_per_term_indicator 
+,CAST(NULL AS string) AS active_policy_indicator 
+,CAST(NULL AS string) AS LifePolicy 
+,CAST(NULL AS string) AS market_segment 
+,CAST(NULL AS string) AS legacy_policy_number 
+,CAST(NULL AS string) AS legacy_term_number 
+,CAST(NULL AS decimal(18,2)) AS legacy_prior_term_premium 
+,CAST(NULL AS string) AS transaction_effective_date 
+,CAST(NULL AS timestamp) AS closetimestamp 
+,CAST(NULL AS string) AS persistency_months 
+,CAST(NULL AS string) AS prior_lapse_days
+,CAST(NULL AS string) AS RenewalTermPolicyPremium
+,CAST(NULL AS string) AS previous_policy_reference
+,CAST(NULL AS string) AS prior_expiration_date 
+,CAST(NULL AS string) AS prior_rental 
+,CAST(NULL AS string) AS policy_mailing_street 
+,CAST(NULL AS decimal(18,2)) AS term_premium 
+,CAST(NULL AS string) AS cis_model 
+,CAST(NULL AS string) AS issuance_written_date
+,CAST(NULL AS int) AS acelongevityyears 
+,CAST(NULL AS int) AS qualifieddrivercount 
+,CAST(NULL AS int) AS qualifiedvehiclecount 
+,CAST(NULL AS string) AS PriorLapseCategory 
+,CAST(NULL AS string) AS AdvancePurchaseEligible 
+,CAST(NULL AS string) AS Persistency_Discount 
+,CAST(NULL AS string) AS prior_insurance_ind 
+,CAST(NULL AS string) AS risk_county 
+,CAST(NULL AS string) AS Transaction_Create_Time
+,CAST(NULL AS int) AS nclossescount_ext
+,CAST(NULL AS string) AS Moved_In_Past_2Years
+,CAST(NULL AS string) AS DigitalSource
+,CAST(NULL AS string) AS DigitalSubSource
+,CAST(NULL AS string) AS priortermcis
+,CAST(NULL AS string) AS priortermcistier
+,CAST(NULL AS decimal(18,4)) AS priortermpremiumtransitionfactor
+,CAST(NULL AS string) AS GroupAffinityDiscount
+,CAST(NULL AS STRING) as MultiPolicyWatercraft
+,CAST(NULL AS STRING) as employee_discount
+,CAST(NULL AS STRING) as membership_discount
+,CAST(NULL AS STRING) AS initialpremiumwithoutratechange
+,CAST(NULL AS STRING) AS initialpremiumwithratechange
+,CAST(NULL AS STRING) AS premiumtransitionpercentage
+,CAST(NULL AS STRING) AS premiumtransitionfactor
+,CAST(NULL AS int) AS premtransitionindex
+,CAST(NULL AS decimal(18,2)) AS transaction_premium_reported
+, 'Big Data' AS data_owner
+, 'Big Data' AS data_curator
+, '' AS retention_period
+, 'non-sensitive' AS sensitivity_level
+, current_timestamp AS load_timestamp
+
+FROM """ + insurance_datalake_jqs_tblautoquote + """ jqsauto
+LEFT JOIN """ + insurance_datalake_jqs_tblprospect_iqq_mapper + """ b ON jqsauto.prospect_id=b.prospect_id
+AND upper(trim(b.quotetype)) = 'AUTO'
+LEFT JOIN (
+      SELECT * FROM
+      (SELECT shadowprospect_id,
+             goldprospect_id,
+             createdate_dt,
+             ROW_NUMBER() OVER(PARTITION BY shadowprospect_id
+                               ORDER BY createdate_dt DESC) AS rown
+            from """ + insurance_datalake_jq_tblshadowgoldprospectmap + """ ) t
+       where t.rown=1) c ON b.prospect_id=c.shadowprospect_id
+LEFT JOIN """ + insurance_datalake_jq_tblautoquote + """ jq ON jq.prospect_id=c.goldprospect_id and jqsauto.quote_id=jq.quote_id
+LEFT JOIN
+  (SELECT *
+   FROM """ + insurance_datalake_jnb_tblpolicy + """
+   WHERE quotetp_id=1) policy ON policy.policy_id=jq.policy_id
+AND policy.quote_id=jq.quote_id
+AND policy.quoteperson_id=jq.prospect_id
+AND policy.quoteperson_id is not NULL
+LEFT JOIN  (select * from """ + insurance_datalake_jnb_tblcustomerroleonpolicy + """ where customerroletp_id=4) role ON  role.policy_id=policy.policy_id 
+LEFT JOIN """ + insurance_datalake_jqs_tblautoquote_campaign + """ campaign ON jqsauto.prospect_id = campaign.prospect_id AND jqsauto.quote_id = campaign.quote_id 
+LEFT JOIN """ + insurance_datalake_jqs_tblleadsource + """ leadsource ON campaign.source_id = leadsource.source_id AND leadsource.sourcetp_id = campaign.sourcetp_id AND leadsource.source_id=26
+AND leadsource.source_id IS NOT NULL
+LEFT JOIN
+  (SELECT person_id,
+          customerid,
+          email_tx
+   FROM """ + insurance_datalake_jqs_tblprospect + """
+   ) prospect ON prospect.person_id = c.goldprospect_id 
+LEFT JOIN """ + insurance_datalake_jnb_tblmultipolicydisctype + """ disc ON policy.multipolicydisctp_id = disc.multipolicydisctp_id
+LEFT JOIN """ + insurance_datalake_jnb_tblpolicyprefixtype + """ prefix ON policy.policyprefixtp_id = prefix.policyprefixtp_id
+LEFT JOIN
+  (SELECT *
+   FROM
+     (SELECT prospect_id,
+             quote_id,
+             count(DISTINCT vehicle_id) AS number_of_vehicles
+      FROM """ + insurance_datalake_jqs_tblvehicle + """
+      GROUP BY prospect_id,
+               quote_id)t) vehicle ON jqsauto.prospect_id = vehicle.prospect_id
+AND jqsauto.quote_id = vehicle.quote_id
+
+LEFT JOIN
+  (SELECT *
+   FROM
+     (SELECT prospect_id,
+             quote_id,
+             count(DISTINCT driver_id) AS number_of_drivers
+      FROM """ + insurance_datalake_jqs_tbldriver + """
+      GROUP BY prospect_id,
+               quote_id)t) driver ON jqsauto.prospect_id = driver.prospect_id
+AND jqsauto.quote_id = driver.quote_id
+
+LEFT JOIN (
+   SELECT * FROM
+  (SELECT agent_id,person_id,addresstp_id,addresstp_tx,address_id,addressline1_nm,addressline2_nm,city_nm,state_id,state_cd,country_nm,county_nm,zip_cd, ROW_NUMBER() OVER(PARTITION BY agent_id, person_id ORDER BY address_id DESC) AS rown
+  FROM jq_addr_temp_tbl ) t where rown = 1 ) addr ON jqsauto.agent_id = addr.agent_id AND jqsauto.prospect_id = addr.person_id
+LEFT JOIN jq_phone_temp_tbl h_phone ON  h_phone.quote_agent_id = jqsauto.agent_id AND h_phone.quote_prospect_id = jqsauto.prospect_id AND h_phone.quote_quote_id = jqsauto.quote_id AND h_phone.phonetp_id=1 AND h_phone.persontp_id=3 
+LEFT JOIN jq_phone_temp_tbl c_phone ON  c_phone.quote_agent_id = jqsauto.agent_id AND c_phone.quote_prospect_id = jqsauto.prospect_id AND c_phone.quote_quote_id = jqsauto.quote_id AND c_phone.phonetp_id=3 AND c_phone.persontp_id=3 
+LEFT JOIN jq_phone_temp_tbl w_phone ON  w_phone.quote_agent_id = jqsauto.agent_id AND w_phone.quote_prospect_id = jqsauto.prospect_id AND w_phone.quote_quote_id = jqsauto.quote_id AND w_phone.phonetp_id=2 AND w_phone.persontp_id=3
+LEFT JOIN person_temp_tbl person ON person.agent_id = jqsauto.agent_id AND person.prospect_id = jqsauto.prospect_id AND person.quote_id = jqsauto.quote_id  
+LEFT JOIN """ + insurance_datalake_jq_tblquotestatustype + """ statustype ON trim(upper(statustype.status_fg)) = trim(upper(jqsauto.status_fg))
+LEFT JOIN jewel_olb_log log ON log.quote_id = jqsauto.quote_id AND log.prospect_id = jqsauto.prospect_id
+""")
+df = df.withColumn("p_year", F.coalesce(F.year("create_timestamp"),F.lit(0),F.year("update_timestamp")))
+write_to_iceberg_partitioned_ddl(df,final_table,"data_source,p_year",sql_file)
+print("jewel shadoe COMPLETED")
+spark.stop()
